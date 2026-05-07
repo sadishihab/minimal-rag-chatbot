@@ -214,6 +214,6 @@ Code is released under the MIT License — see `LICENSE`.
 
 ## Author
 
-Built by **Sadis Khan** ([portfolio link]) — a portfolio project demonstrating production RAG architecture, multilingual NLP for Bangla/Banglish/English, and Messenger Platform integration.
+Built by **Md. Shihabuddin Sadi** (https://sadishihab.github.io/) — a portfolio project demonstrating production RAG architecture, multilingual NLP for Bangla/Banglish/English, and Messenger Platform integration.
 
 The fictional sample data in this repo is for demonstration only.
