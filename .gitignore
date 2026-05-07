@@ -1,0 +1,36 @@
+# Environment variables (NEVER commit API keys)
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+env/
+
+# PyCharm
+.idea/
+
+# Vector database (generated locally, regenerate with: python -m ingestion.indexer)
+vector_store/chroma_db/
+vector_store/*.bin
+vector_store/*.index
+vector_store/*.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+# Catalog test reports (generated output)
+
+tests/catalog_report_*.md
+
+# Allow sample/demo files explicitly (override the data/*.json block above)
+!data/*.sample.json
+!data/README.md

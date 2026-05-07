@@ -1,0 +1,92 @@
+{
+  "company": "Sample Interiors (Demo)",
+  "version": "0.1-sample",
+  "last_updated": "2026-01-01",
+  "description": "FICTIONAL sample knowledge base for demo purposes. Replace with your own data following this schema.",
+  "company_info": {
+    "office_address": "১২৩, ডেমো রোড, ঢাকা-১২৩৪",
+    "phone": "01XXX-XXXXXX",
+    "business_hours": "সকাল ১০টা - সন্ধ্যা ৭টা",
+    "website": "https://example.com"
+  },
+  "language_rules": {
+    "reply_language": "bangla",
+    "tone": "formal_respectful",
+    "pronoun": "আপনি",
+    "numeral_format": "bangla_numerals"
+  },
+  "entries": [
+    {
+      "id": "pricing_001",
+      "intent": "pricing",
+      "sub_intent": "overview",
+      "language": "bangla",
+      "question": "আপনাদের দাম কেমন?",
+      "answer": "আমাদের প্যাকেজ শুরু হয় প্রতি বর্গফুট ১,০০০ টাকা থেকে। আপনার বাসার সাইজ জানালে বিস্তারিত হিসাব দিতে পারব।",
+      "attachments": []
+    },
+    {
+      "id": "pricing_002",
+      "intent": "pricing",
+      "sub_intent": "overview",
+      "language": "banglish",
+      "question": "interior er cost koto?",
+      "answer": "আমাদের প্যাকেজ শুরু হয় প্রতি বর্গফুট ১,০০০ টাকা থেকে। আপনার বাসার সাইজ জানালে বিস্তারিত হিসাব দিতে পারব।",
+      "attachments": []
+    },
+    {
+      "id": "pricing_003",
+      "intent": "pricing",
+      "sub_intent": "overview",
+      "language": "english",
+      "question": "What are your prices?",
+      "answer": "আমাদের প্যাকেজ শুরু হয় প্রতি বর্গফুট ১,০০০ টাকা থেকে। আপনার বাসার সাইজ জানালে বিস্তারিত হিসাব দিতে পারব।",
+      "attachments": []
+    },
+    {
+      "id": "contact_001",
+      "intent": "contact",
+      "sub_intent": "phone",
+      "language": "bangla",
+      "question": "আপনাদের নম্বর কী?",
+      "answer": "আমাদের সাথে যোগাযোগ করতে পারেন এই নম্বরে: 01XXX-XXXXXX। অফিস সময় সকাল ১০টা থেকে সন্ধ্যা ৭টা।",
+      "attachments": []
+    },
+    {
+      "id": "contact_002",
+      "intent": "contact",
+      "sub_intent": "phone",
+      "language": "english",
+      "question": "What is your contact number?",
+      "answer": "আমাদের সাথে যোগাযোগ করতে পারেন এই নম্বরে: 01XXX-XXXXXX। অফিস সময় সকাল ১০টা থেকে সন্ধ্যা ৭টা।",
+      "attachments": []
+    },
+    {
+      "id": "contact_003",
+      "intent": "contact",
+      "sub_intent": "address",
+      "language": "banglish",
+      "question": "office kothay?",
+      "answer": "আমাদের অফিস: ১২৩, ডেমো রোড, ঢাকা-১২৩৪। যেকোনো সময় ভিজিট করতে পারেন।",
+      "attachments": []
+    },
+    {
+      "id": "process_001",
+      "intent": "process",
+      "sub_intent": "overview",
+      "language": "english",
+      "question": "How does the process work?",
+      "answer": "প্রথমে আমরা আপনার বাসা ভিজিট করব, এরপর ডিজাইন প্রপোজাল দিব। আপনার অনুমোদনের পর কাজ শুরু হবে।",
+      "attachments": []
+    },
+    {
+      "id": "site_visit_001",
+      "intent": "site_visit",
+      "sub_intent": "free_or_paid",
+      "language": "banglish",
+      "question": "site visit free?",
+      "answer": "ঢাকা শহরের ভেতরে সাইট ভিজিট ফ্রি। ঢাকার বাইরে হলে ট্রান্সপোর্ট খরচ যুক্ত হবে।",
+      "attachments": []
+    }
+  ]
+}
