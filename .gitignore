@@ -34,3 +34,4 @@ tests/catalog_report_*.md
 # Allow sample/demo files explicitly (override the data/*.json block above)
 !data/*.sample.json
 !data/README.md
+data/knowledge_base.json
