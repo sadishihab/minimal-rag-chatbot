@@ -2,7 +2,7 @@
 
 A production-ready Retrieval-Augmented Generation (RAG) chatbot built for **Minimal Limited**, an interior design firm in Dhaka, Bangladesh. Customers message the company's Facebook Page in **Bangla, Banglish, or English** — sometimes mixing all three — and the bot retrieves the relevant answer from a curated knowledge base and replies in **formal Bangla** with the appropriate tone, numerals, and brand-name conventions.
 
-> **Status:** Live in production on Facebook Messenger. Deployed on DigitalOcean via Docker, behind nginx with TLS. Human-takeover (rep-pause) system active. Facebook App Review in progress for full public rollout.
+> **Status:** Live on a private test Facebook Page undergoing structured user testing. Knowledge base is being refined based on tester feedback before rollout to the production Messenger page. Deployed on DigitalOcean via Docker, behind nginx with TLS. Human-takeover (rep-pause) system active.
 
 ---
 
