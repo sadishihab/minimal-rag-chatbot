@@ -17,7 +17,14 @@ import logging
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
 
-from config import FACEBOOK_VERIFY_TOKEN, FACEBOOK_APP_SECRET, FACEBOOK_APP_ID
+from config import (
+    FACEBOOK_VERIFY_TOKEN,
+    FACEBOOK_APP_SECRET,
+    FACEBOOK_APP_ID,
+    BOT_ACTIVE_START_HOUR,
+    BOT_ACTIVE_END_HOUR,
+)
+from api.active_hours import bot_is_active
 from api.send_api import send_text_message
 from api import pause_state
 from api.message_classifier import is_emoji_only, is_all_stickers
@@ -254,6 +261,7 @@ async def receive_webhook(request: Request):
     Flow:
       1. Read raw body (as bytes — required for HMAC verification)
       2. Verify HMAC signature
+      2b. Active-hours gate — outside the window, ack and do nothing else
       3. Parse JSON payload
       4. Loop over events, process each
       5. Return 200 OK
@@ -267,6 +275,28 @@ async def receive_webhook(request: Request):
     if not verify_signature(raw_body, signature):
         log.warning("POST /webhook rejected — invalid signature")
         return JSONResponse(status_code=200, content={"status": "ignored"})
+
+    # ACTIVE-HOURS GATE
+    # Placed here — after signature verification, before JSON parsing —
+    # because every event type (text, attachment, sticker, echo, postback)
+    # reaches us through the entry[].messaging[] loop below, so gating above
+    # that loop covers all of them by construction, including event types
+    # process_messaging_event does not branch on yet.
+    #
+    # Signature verification stays first: it is pure computation with no
+    # sends and no state mutation, so it does not break "inert", and it means
+    # forged requests are rejected identically at every hour of the day.
+    # Nothing past this point needs the parsed body, so we do not parse it.
+    if not bot_is_active():
+        log.info(
+            f"Outside active hours "
+            f"({BOT_ACTIVE_START_HOUR:02d}:00-{BOT_ACTIVE_END_HOUR:02d}:00 "
+            f"Asia/Dhaka) — webhook event skipped"
+        )
+        return JSONResponse(
+            status_code=200,
+            content={"status": "ignored", "reason": "outside_active_hours"},
+        )
 
     # Parse JSON
     try:

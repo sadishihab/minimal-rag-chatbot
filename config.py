@@ -64,6 +64,37 @@ API_HOST = "0.0.0.0"
 API_PORT = 8000
 
 # ============================================================
+# ACTIVE HOURS (Messenger webhook gate)
+# ============================================================
+# The bot covers the overnight shift, when no rep is watching Page Inbox.
+# Outside this window api/messenger.py drops every webhook event without
+# sending, reading pause state, or calling the RAG pipeline.
+#
+# Start is inclusive, end is exclusive, hour granularity. The window may
+# wrap midnight (the 23 -> 9 default spans two calendar days).
+# END accepts 24 ("end of day") so 0 -> 24 expresses always-active.
+#
+# Timezone is pinned in api/active_hours.py and is deliberately NOT an
+# env var — the business is in Dhaka wherever the container runs.
+BOT_TIMEZONE = "Asia/Dhaka"
+
+
+def _hour_from_env(name: str, default: str) -> int:
+    """Parse an hour-valued env var, failing loudly on a non-integer."""
+    raw = os.getenv(name, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from None
+
+
+BOT_ACTIVE_START_HOUR = _hour_from_env("BOT_ACTIVE_START_HOUR", "23")
+BOT_ACTIVE_END_HOUR = _hour_from_env("BOT_ACTIVE_END_HOUR", "9")
+
+# Range and degenerate-window checks live in api/active_hours.validate_window,
+# next to the logic that consumes them, and run at that module's import.
+
+# ============================================================
 # VALIDATION
 # ============================================================
 def validate_config():
