@@ -1,0 +1,226 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+A hand-rolled RAG chatbot for **Minimal Limited**, an interior design firm in Dhaka, Bangladesh, serving customers over Facebook Messenger. Customers write in Bangla, Banglish, or English (often mixed within one message); the bot always replies in formal Bangla. No LangChain/LlamaIndex/ChromaDB — every stage of the pipeline (embed → FAISS search → prompt build → OpenAI call → post-process) is plain Python so the data flow stays inspectable. See README.md for the full architecture diagram and design rationale ("Key Design Decisions" section) — read it before changing retrieval thresholds, the language-triplication scheme, or the pause system.
+
+Status: live on a private test Facebook Page under structured user testing, not yet in production rollout.
+
+## Commands
+
+```bash
+# Setup
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env            # fill in OPENAI_API_KEY + Facebook creds
+cp data/knowledge_base.sample.json data/knowledge_base.json   # real KB is gitignored/proprietary
+
+# Build the FAISS index (required before running the API or tests that hit the retriever)
+python -m ingestion.indexer
+
+# Run locally
+python -m tests.chat_cli                          # interactive CLI, no FastAPI/Messenger needed
+uvicorn api.server:app --reload --port 8000        # full server (POST /chat, GET /health, /webhook)
+
+# Tests
+pytest tests/test_loader.py tests/test_active_hours.py tests/test_messenger_gate.py -v
+pytest tests/ -v                                   # tests/test_api.py needs a built FAISS index + OPENAI_API_KEY
+pytest tests/test_message_classifier.py::test_name -v   # single test
+
+# KB retrieval eval (137 queries / 28 categories, hits real OpenAI API — costs money)
+python -m tests.test_catalog
+# → writes tests/catalog_report_YYYY-MM-DD_HH-MM.md
+
+# KB hygiene check
+python -m tests.audit_newlines
+
+# Lint (ruff is used — see .ruff_cache; no committed ruff.toml, defaults apply)
+ruff check .
+```
+
+`main.py` at the repo root is an unused PyCharm stub, not the entry point — the real app is `api.server:app`.
+
+## Architecture
+
+Request flow (Messenger path — `api/messenger.py` → `generation/generator.py`):
+
+1. **`api/messenger.py`** — Messenger webhook (`/webhook`). Verifies the FB HMAC-SHA256 signature, then applies the **active-hours gate** (`api/active_hours.py`): outside `BOT_ACTIVE_START_HOUR`..`BOT_ACTIVE_END_HOUR` (default 23→9, always Asia/Dhaka, wraps midnight) it acks FB with 200 and does nothing else — no sends, no `pause_state` reads or writes, no RAG. The gate sits above the `entry[].messaging[]` loop so it covers every event type including echoes and postbacks; do not move it below that loop or into `process_messaging_event`. `validate_window()` rejects out-of-range and zero-length windows at import — `0`/`24` is the explicit always-active config. Inside the window, each event is routed *before* it ever reaches the RAG pipeline:
+   - `is_echo` message where `app_id != FACEBOOK_APP_ID` → a human rep replied via Page Inbox → `pause_state.pause_thread()` (bot goes silent for that customer for 7 days, sliding window)
+   - thread already paused → bot stays silent for text; attachments still get an acknowledgment
+   - attachment that's all stickers → "ধন্যবাদ" only, no pause
+   - any other attachment, or text containing a URL → handoff message + pause (needs human review)
+   - emoji-only text → "ধন্যবাদ" only, no pause, no RAG call
+   - otherwise → falls through to `generator.generate(text)`
+2. **`generation/generator.py`** (`Generator` class) — the actual RAG pipeline, also reachable directly via `POST /chat`:
+   - sanitize input (`generation/sanitizer.py`)
+   - phone-number bypass (`generation/phone_detector.py`) — if the customer shares a number, skip retrieval/LLM entirely and send a canned acknowledgment
+   - retrieve (`retrieval/retriever.py`): embed the query, FAISS `IndexFlatIP` cosine search, `top_k=4`, drop anything below `SIMILARITY_THRESHOLD=0.3`
+   - build prompt (`generation/prompt_builder.py`) with strict formal-Bangla output rules
+   - call `gpt-4o-mini`, with per-exception-type OpenAI error handling, each mapped to a specific Bangla fallback message (rate limit / connection / auth / bad request / generic) — `Generator.generate()` is designed to never raise, always return a user-facing string
+   - post-process: `generation/formatter.py` strips markdown that leaked through
+3. **`api/send_api.py`** sends the reply back via the Messenger Send API.
+
+Ingestion is a separate, one-time-per-KB-change pipeline (`ingestion/loader.py` → `ingestion/embedder.py` → `ingestion/indexer.py`), run manually via `python -m ingestion.indexer`. It is not invoked at request time — `Retriever` just loads the pre-built `vector_store/faiss.index` + `vector_store/metadata.json` at startup and reuses them for every query. The Docker `entrypoint.sh` builds the index automatically on container start if it's missing.
+
+**Knowledge base language scheme**: every Q&A is stored three times (Bangla, Banglish, English versions of the *question*, all pointing to the same Bangla *answer*), so embedding search matches regardless of which script/language the customer typed in. The KB is embedded on the question, never the answer — answers are retrieved as metadata, not searched. This is why KB edits should always add/edit in triplets, not single entries, unless deliberately doing something else.
+
+**Pause state** (`api/pause_state.py`) is an in-memory process-local dict — lost on restart by design for now (self-healing: rep's next reply re-pauses). Do not add persistence without checking the README roadmap; SQLite-backed persistence is a known open item.
+
+**Config** (`config.py`) is the single source of truth for paths, model names (`gpt-4o-mini`, `text-embedding-3-small`), `TOP_K`, `SIMILARITY_THRESHOLD`, `BOT_ACTIVE_START_HOUR`/`BOT_ACTIVE_END_HOUR`, and input/body-size limits — check here before hardcoding any of those values elsewhere.
+
+`api/server.py` instantiates one `Generator` at FastAPI startup (`app.state.generator`) and reuses it for every request/webhook event — never construct a new `Generator` (or `Retriever`) per-request, it reloads the FAISS index each time.
+
+## Data
+
+- `data/knowledge_base.json` — the real KB, gitignored and proprietary (336 entries in production). Never commit real customer/business data here.
+- `data/knowledge_base.sample.json` — fictional 8-entry sample showing the schema (`data/README.md` documents required fields: `id`, `intent`, `sub_intent`, `language`, `question`, `answer`, `attachments`). Use this for any example/test KB content.
+- `vector_store/` (FAISS index + metadata) is gitignored and regenerated locally via the indexer — never hand-edit it.
+
+## Commit conventions
+
+**You commit autonomously.** Do not ask for permission before committing. When
+a unit of work is complete and the gates below pass, commit it, push it, and
+report what you did.
+
+### Hard gates — never commit if any of these fail
+
+1. **The full test suite passes.** Run every suite, not just the one you
+   touched. Some suites print PASS/FAIL rather than exiting non-zero, so
+   **read the output** rather than trusting the exit code.
+
+   <!-- Replace with this project's actual command(s) -->
+   ```bash
+   pytest
+   ```
+
+2. **Any project-specific validation passes** if you touched config, schema, or
+   manifest files.
+
+3. **The diff contains only what you intended.** Run `git status --short` and
+   `git diff --stat` before staging. If a file you did not mean to touch
+   appears, stop and report it.
+
+4. **No secrets, binaries, or build artifacts.** Never stage anything under
+   `dist/`, `build/`, `__pycache__/`, `*.egg-info/`, `node_modules/`, or any
+   file containing a token or key.
+
+### What goes in a commit
+
+- **One logical change.** Never mix a refactor with a behaviour change, or
+  formatting with a feature.
+- **Behaviour changes land with their test, in the same commit.** A fix without
+  a test that would have caught it is not finished.
+- **Mechanical changes get their own commit**, clearly labelled (e.g.
+  `chore: ruff --fix`).
+- **Config and tooling changes are separate** from product changes.
+
+### Commit messages
+
+Subject under 72 characters with a conventional prefix (`feat:`, `fix:`,
+`chore:`, `docs:`, `test:`, `build:`).
+
+Then a body explaining **why**, not what — the diff shows what. What was wrong
+before, why this approach over the alternatives, and anything a future reader
+would otherwise have to rediscover. If you made a judgement call, say what you
+decided and why.
+
+### After committing
+
+Push, then report in this exact form:
+
+```
+committed <sha> <subject>
+  <file>  +N -M
+  <file>  +N -M
+tests: <suites run, result>
+pushed to origin/main
+```
+
+### Stop and ask instead of proceeding
+
+Commit freely, but surface it when:
+
+- A test fails, or you had to change a test to make it pass.
+- The change touches anything user-facing: copy, error messages, documentation
+  a user reads, licence or privacy text.
+- You are about to delete or rename a file, or move code between files.
+- You would need `--force`, or to amend or rebase anything already pushed.
+- The task turned out to require a design decision that was not specified.
+
+### Never, under any circumstances
+
+- Force push, rewrite pushed history, or delete branches or tags.
+- Use `git add -A` or `git add .` — stage only your own files by explicit path.
+  The working tree often contains unrelated uncommitted work.
+- Version-bump anything without being asked.
+
+---
+
+## Verification conventions
+
+Design checks that could actually fail. A green run proves nothing unless the
+same check would go red if the thing were broken.
+
+- **Every new guard needs a positive control.** A suite where nothing is ever
+  rejected, cached, or substituted will pass every negative test.
+- **Remove the dependency and re-run.** Move the gitignored file aside, use
+  `--no-cache-dir`, unset the env var, try a fresh clone. Things that work only
+  on this machine look identical to things that work.
+- **Read what "passed" means.** A test can print success while asserting
+  nothing.
+- **After a scripted edit, check the diffstat.** Zero lines means the file was
+  untracked; hundreds means a rewrite reformatted everything.
+- **After any file move, grep for stale references** in READMEs, docs,
+  docstrings, and CI config.
+- **When a tool reports success but nothing changed, believe the state, not the
+  report.**
+
+---
+
+## Project-specific traps
+
+<!-- Starts empty. Add each thing that costs you more than an hour, so it costs
+     no one an hour again. Be specific: the symptom, the cause, and the fix. -->
+
+## Known issues (filed, not in scope of current work)
+
+### Tests that report success while asserting nothing
+
+Three instances found so far. This is the failure mode the *Verification
+conventions* section above exists to prevent, so treat a new green suite as
+unproven until you have watched it go red.
+
+1. **`tests/test_message_classifier.py` collects zero tests under pytest.** Its
+   functions are named `run_emoji_tests`/`run_sticker_tests` and only execute
+   under `if __name__ == "__main__"`, so pytest finds nothing to run and
+   reports success. Run it as `python tests/test_message_classifier.py`.
+2. **`tests/test_api.py::test_health` returns `False` and pytest still reports
+   it as passed.** It `return`s a bool instead of asserting, so the result is
+   discarded; pytest only warns (`PytestReturnNotNoneWarning`). It reports
+   passed with no server running at all. Same class of bug as instance 1.
+3. **`test_bot_is_active_ignores_host_timezone` was vacuous** — it asserted
+   `bot_is_active() is is_within_active_hours(now_in_dhaka())`, which is that
+   function's own definition, so both sides moved together under any clock
+   change. Fixed in 70e6539 by freezing the clock; kept here as the worked
+   example of how the shape hides.
+
+### Other
+
+- `tests/test_api.py` also errors at collection for `test_chat` and
+  `test_validation_error` (`fixture 'label' not found`) — it is a script-style
+  harness meant for `python -m tests.test_api` against a live server.
+- `THANKS_MESSAGE` is defined twice, identically, in `api/messenger.py`, and
+  `import re` sits mid-file rather than at the top.
+- Postbacks have no branch of their own in `process_messaging_event`; they fall
+  through to the "no text and no attachments" handoff.
+
+### Watch out for
+
+- `is_within_active_hours()` converts any **aware** datetime to Asia/Dhaka
+  before comparing, which means it silently repairs a clock that returns
+  aware host-local time. A bug in `now_in_dhaka()` of that shape is invisible
+  in `bot_is_active()`'s return value and only shows at the clock source —
+  which is why `test_bot_is_active_ignores_host_timezone` asserts on the
+  returned `utcoffset()` as well as on the boolean.
