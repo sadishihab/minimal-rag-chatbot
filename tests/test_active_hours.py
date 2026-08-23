@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from api import active_hours
 from api.active_hours import (
     DHAKA,
     bot_is_active,
@@ -20,6 +21,24 @@ from api.active_hours import (
 
 # The production default window: overnight, wrapping midnight.
 START, END = 23, 9
+
+# A fixed instant chosen so the two timezones DISAGREE about the window:
+#   2026-08-23 20:00 UTC  ->  Dhaka    02:00  (INSIDE  23->9)
+#                         ->  New York 16:00  (OUTSIDE 23->9)
+# Freezing here is what makes the pinning assertions independent of when
+# the suite happens to run — with the real clock they can agree by luck.
+FROZEN_UTC = datetime(2026, 8, 23, 20, 0, tzinfo=timezone.utc)
+
+
+class FrozenClock(datetime):
+    """Drop-in for api.active_hours.datetime, pinned to FROZEN_UTC."""
+
+    @classmethod
+    def now(cls, tz=None):
+        if tz is None:
+            # Mimic real datetime.now(): naive, in host-local time.
+            return FROZEN_UTC.astimezone().replace(tzinfo=None)
+        return FROZEN_UTC.astimezone(tz)
 
 
 def dhaka(year, month, day, hour, minute=0, second=0):
@@ -158,9 +177,36 @@ def test_now_in_dhaka_ignores_host_timezone(host_tz_new_york):
     assert now_in_dhaka().utcoffset() == timedelta(hours=6)
 
 
-def test_bot_is_active_ignores_host_timezone(host_tz_new_york):
-    """The convenience wrapper must not reintroduce host-local time."""
-    assert bot_is_active() is is_within_active_hours(now_in_dhaka())
+def test_bot_is_active_ignores_host_timezone(host_tz_new_york, monkeypatch):
+    """
+    The wrapper must read a Dhaka-pinned clock AND return the Dhaka answer.
+
+    The previous version asserted
+        bot_is_active() is is_within_active_hours(now_in_dhaka())
+    which is bot_is_active's own definition — both sides moved together
+    under any clock change, so it guarded nothing.
+
+    Both halves of the property are asserted here because they fail to
+    different mutations:
+      - returning a NAIVE host-local time changes the answer (16:00 read
+        as Dhaka-local is outside the window, 02:00 is inside)
+      - returning an AWARE host-local time does NOT change the answer,
+        because is_within_active_hours converts aware datetimes to Dhaka
+        and so silently repairs it. Only the clock source itself shows it.
+    """
+    monkeypatch.setattr(active_hours, "datetime", FrozenClock)
+    monkeypatch.setattr(active_hours, "BOT_ACTIVE_START_HOUR", START)
+    monkeypatch.setattr(active_hours, "BOT_ACTIVE_END_HOUR", END)
+
+    # Precondition: the frozen instant really does split the two zones, so
+    # neither assertion below can hold by coincidence.
+    assert FROZEN_UTC.astimezone(DHAKA).hour == 2, "Dhaka side: inside window"
+    assert FROZEN_UTC.astimezone().hour == 16, "host side: outside window"
+
+    assert bot_is_active() is True, "must return the Dhaka answer, not the host one"
+    assert now_in_dhaka().utcoffset() == timedelta(hours=6), (
+        "the wrapper's clock source must be Dhaka-pinned"
+    )
 
 
 def test_aware_utc_instant_is_judged_by_its_dhaka_hour():
