@@ -30,6 +30,8 @@ This bot solves that by:
 ┌─────────────────────────────────────────────────────────────────────┐
 │              FastAPI Webhook  (api/server.py)                        │
 │   • verify FB HMAC-SHA256 signature                                  │
+│   • active-hours gate (api/active_hours.py)                          │
+│     → outside 23:00–09:00 Asia/Dhaka → ack 200, do nothing else      │
 │   • check pause_state (human-takeover guard)                         │
 │   • route to message_classifier                                      │
 │     → emoji/sticker → ধন্যবাদ (no RAG, no pause)                   │
@@ -105,6 +107,8 @@ This bot solves that by:
 
 **Why a similarity threshold?** Below ~0.3 cosine similarity, retrieved entries are noise. Better to fall back to "let our manager call you" than to confidently answer the wrong question.
 
+**Why an active-hours window?** The bot covers the overnight shift, when nobody is watching Page Inbox. During business hours the reps answer for themselves, and a bot replying alongside them is worse than no bot at all. Outside its window the webhook still acks Facebook with 200 — so FB does not retry or disable the subscription — but nothing else runs: no sends, no pause-state access, no OpenAI calls. The gate sits directly after signature verification, above the loop that dispatches events, so it covers every event type by construction rather than by enumerating them. Times are always Asia/Dhaka regardless of where the container runs, and a window that is missing, out of range, or zero-length stops the app at boot instead of being guessed at.
+
 **Why a human-takeover pause system?** The bot is a first-responder, not a replacement. When a human rep replies via Page Inbox, the bot detects the echo event, identifies it as a rep reply (by `app_id` mismatch), and pauses itself for 7 days on a sliding window. Attachments, URLs, and phone numbers also trigger handoff. The bot stays completely silent while paused — the rep owns the thread.
 
 ---
@@ -133,10 +137,13 @@ minimal_rag/
 │   ├── messenger.py
 │   ├── send_api.py
 │   ├── message_classifier.py
+│   ├── active_hours.py
 │   ├── pause_state.py
 │   └── request_context.py
 ├── tests/                        # pytest suites + eval tools
 │   ├── test_loader.py
+│   ├── test_active_hours.py
+│   ├── test_messenger_gate.py
 │   ├── test_api.py
 │   ├── test_message_classifier.py
 │   ├── chat_cli.py               # interactive CLI for exploratory testing
@@ -181,6 +188,16 @@ FACEBOOK_PAGE_ACCESS_TOKEN=...
 FACEBOOK_APP_SECRET=...
 FACEBOOK_VERIFY_TOKEN=...
 FACEBOOK_APP_ID=...
+```
+
+Optional — the active-hours window (defaults shown). Start is inclusive, end
+is exclusive, whole hours, always Asia/Dhaka. The window may wrap midnight.
+`BOT_ACTIVE_END_HOUR` accepts `24` for end-of-day, so `0`/`24` means
+always-active; setting both to the same value is rejected at startup.
+
+```
+BOT_ACTIVE_START_HOUR=23
+BOT_ACTIVE_END_HOUR=9
 ```
 
 ### 3. Add your knowledge base
@@ -265,6 +282,7 @@ Categories cover: greetings, pricing (general + room-specific), packages, materi
 - [x] Human-takeover pause state (7-day sliding window)
 - [x] Message classifier (emoji, sticker, attachment, URL, phone)
 - [x] Echo detection for rep-reply via Page Inbox
+- [x] Configurable active-hours window (Asia/Dhaka, wraps midnight)
 - [x] Interactive CLI for exploratory testing
 - [x] Catalog-based eval system (137 queries × 28 categories)
 - [x] Docker multi-stage build, non-root user
