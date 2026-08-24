@@ -40,3 +40,4 @@ tests/catalog_report_*.md
 !data/*.sample.json
 !data/README.md
 data/knowledge_base.json
+CONTEXT.md
