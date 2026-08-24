@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A hand-rolled RAG chatbot for **Minimal Limited**, an interior design firm in Dhaka, Bangladesh, serving customers over Facebook Messenger. Customers write in Bangla, Banglish, or English (often mixed within one message); the bot always replies in formal Bangla. No LangChain/LlamaIndex/ChromaDB — every stage of the pipeline (embed → FAISS search → prompt build → OpenAI call → post-process) is plain Python so the data flow stays inspectable. See README.md for the full architecture diagram and design rationale ("Key Design Decisions" section) — read it before changing retrieval thresholds, the language-triplication scheme, or the pause system.
 
-Status: live on a private test Facebook Page under structured user testing, not yet in production rollout.
+Status: live on a private test Facebook Page under structured user testing. Production rollout is planned and blocked on client-side Meta access — see *Deployment and environments* below.
 
 ## Commands
 
@@ -25,9 +25,9 @@ python -m tests.chat_cli                          # interactive CLI, no FastAPI/
 uvicorn api.server:app --reload --port 8000        # full server (POST /chat, GET /health, /webhook)
 
 # Tests
-pytest tests/test_loader.py tests/test_active_hours.py tests/test_messenger_gate.py -v
-pytest tests/ -v                                   # tests/test_api.py needs a built FAISS index + OPENAI_API_KEY
-pytest tests/test_message_classifier.py::test_name -v   # single test
+pytest tests/ -v                                   # test_api.py errors at collection — see Known issues
+python tests/test_message_classifier.py            # script-style, NOT collected by pytest
+pytest tests/test_active_hours.py::test_name -v    # single test
 
 # KB retrieval eval (137 queries / 28 categories, hits real OpenAI API — costs money)
 python -m tests.test_catalog
@@ -66,7 +66,7 @@ Ingestion is a separate, one-time-per-KB-change pipeline (`ingestion/loader.py` 
 
 **Knowledge base language scheme**: every Q&A is stored three times (Bangla, Banglish, English versions of the *question*, all pointing to the same Bangla *answer*), so embedding search matches regardless of which script/language the customer typed in. The KB is embedded on the question, never the answer — answers are retrieved as metadata, not searched. This is why KB edits should always add/edit in triplets, not single entries, unless deliberately doing something else.
 
-**Pause state** (`api/pause_state.py`) is an in-memory process-local dict — lost on restart by design for now (self-healing: rep's next reply re-pauses). Do not add persistence without checking the README roadmap; SQLite-backed persistence is a known open item.
+**Pause state** (`api/pause_state.py`) is an in-memory process-local dict — lost on restart by design for now (self-healing: rep's next reply re-pauses). This is only acceptable because the active-hours gate means the bot effectively starts fresh each night; a 7-day pause never needs to survive a restart in the current deployment. Do not add persistence without checking the README roadmap; SQLite-backed persistence is a known open item and becomes necessary if the window ever widens toward always-on.
 
 **Config** (`config.py`) is the single source of truth for paths, model names (`gpt-4o-mini`, `text-embedding-3-small`), `TOP_K`, `SIMILARITY_THRESHOLD`, `BOT_ACTIVE_START_HOUR`/`BOT_ACTIVE_END_HOUR`, and input/body-size limits — check here before hardcoding any of those values elsewhere.
 
@@ -77,6 +77,32 @@ Ingestion is a separate, one-time-per-KB-change pipeline (`ingestion/loader.py` 
 - `data/knowledge_base.json` — the real KB, gitignored and proprietary (336 entries in production). Never commit real customer/business data here.
 - `data/knowledge_base.sample.json` — fictional 8-entry sample showing the schema (`data/README.md` documents required fields: `id`, `intent`, `sub_intent`, `language`, `question`, `answer`, `attachments`). Use this for any example/test KB content.
 - `vector_store/` (FAISS index + metadata) is gitignored and regenerated locally via the indexer — never hand-edit it.
+
+## Deployment and environments
+
+Two Meta apps, one per environment. This is forced by the platform, not a preference: **each Meta app has exactly one webhook URL**, so test and production cannot share an app and still point at different code.
+
+|             | Test                       | Production                    |
+|-------------|----------------------------|-------------------------------|
+| Meta app    | existing (`1484659980123174`) | new, in the client's business portfolio |
+| Page        | private test page          | Minimal Limited               |
+| Container   | `minimal-rag-test`         | `minimal-rag`                 |
+| Port        | 8001                       | 8000                          |
+| Env file    | `~/.env.test`              | `~/.env.prod`                 |
+| Image tag   | `:latest`                  | `:vX.Y.Z` — **pinned**        |
+| Window      | `0 → 24`                   | `23 → 9`                      |
+
+Host: DigitalOcean, Ubuntu 24.04, Singapore, 2GB / 1 vCPU. nginx terminates TLS and proxies by subdomain. Secrets are injected at `docker run` time via `--env-file`, never baked into the image and never passed as `-e` flags (which would land in shell history).
+
+**Production must never run `:latest`.** Tag every build twice — `:latest` and `:vX.Y.Z`. Test pulls `:latest`; production pulls the explicit version, and only after testers sign off. Without this, any stray `docker push` silently lands on the client's live customer channel. Rollback is then just re-running the previous tag.
+
+Note that `data/knowledge_base.json` is `COPY`d into the image at build time, so **a version tag pins code and knowledge base together**. That is deliberate — it is what makes a KB-caused regression rollback-able.
+
+**Cutover note:** `chat.minimallimited.com` currently serves the *test* bot. At cutover that domain becomes production (it is the client's real domain), test moves to a new subdomain, and the webhook URL in the existing app is updated to match.
+
+**App Review may not be required.** Meta's position is that using the API for your own Page as a Direct Developer needs neither Advanced Access nor App Review. Sources conflict, so treat it as unproven. The cheap test: switch the app to Live mode and have someone with no app or Page role message the Page. A reply means no review is needed. The known side effect of skipping review is that customer names appear as "John Doe" without advanced `pages_messaging` — irrelevant here, the bot never uses names.
+
+**No in-conversation bot disclosure**, deliberately. Meta requires it where applicable law does (California and Germany are the flagged jurisdictions) and recommends it elsewhere; Bangladesh has no such law. Revisit only if App Review turns out to be needed, where its absence is a common rejection reason — the fix is a Messenger Profile API greeting-screen call, which appears before the first message and never inside a thread.
 
 ## Commit conventions
 
@@ -90,10 +116,14 @@ report what you did.
    touched. Some suites print PASS/FAIL rather than exiting non-zero, so
    **read the output** rather than trusting the exit code.
 
-   <!-- Replace with this project's actual command(s) -->
    ```bash
-   pytest
+   pytest tests/ -v
+   python tests/test_message_classifier.py
    ```
+
+   `tests/test_api.py` errors at collection (see *Known issues*) — that is
+   pre-existing and expected, not a regression you introduced. Everything else
+   must be green.
 
 2. **Any project-specific validation passes** if you touched config, schema, or
    manifest files.
@@ -144,7 +174,8 @@ Commit freely, but surface it when:
 
 - A test fails, or you had to change a test to make it pass.
 - The change touches anything user-facing: copy, error messages, documentation
-  a user reads, licence or privacy text.
+  a user reads, licence or privacy text. **All customer-facing Bangla copy is
+  owned by the maintainer, not by you** — propose wording, do not ship it.
 - You are about to delete or rename a file, or move code between files.
 - You would need `--force`, or to amend or rebase anything already pushed.
 - The task turned out to require a design decision that was not specified.
@@ -181,8 +212,48 @@ same check would go red if the thing were broken.
 
 ## Project-specific traps
 
-<!-- Starts empty. Add each thing that costs you more than an hour, so it costs
-     no one an hour again. Be specific: the symptom, the cause, and the fix. -->
+Each of these cost real time once. Add to the list rather than remembering.
+
+**A stale image can be deployed while the pull appears to succeed.**
+GHCR authentication is per-machine — logging in locally does not log in the
+droplet. An unauthenticated `docker pull` fails with
+`error from registry: denied`, but a subsequent `docker run` happily starts the
+*previously cached* image. The deploy looks like it worked and the old code
+keeps running. Always check the digest reported by `docker pull` against the one
+`docker push` printed, and `docker login ghcr.io` on every machine that pulls.
+
+**Retrieval clustering silently answers from the wrong intent.**
+Semantically adjacent intents sit close in embedding space, so a query can land
+nearer the wrong cluster and produce a confident, fluent, wrong answer — e.g. a
+location question retrieving `services_offered`. The symptom looks like a
+generation/hallucination bug and is not. **Check the logged top score and
+matched intent before touching the prompt.** The fix is a canonical KB triplet
+whose question matches the failing phrasing closely.
+
+**`message_echoes` must be subscribed in two separate places.**
+App level (App Dashboard → Webhooks) *and* page level (Graph API
+`subscribed_apps`). Missing either one means echo events simply never arrive —
+no error, no warning — and rep-takeover detection is silently dead. Everything
+else about the bot continues working, which is what makes it hard to spot.
+
+**A fresh clone cannot run.**
+Both `data/knowledge_base.json` and `vector_store/` are gitignored, so the repo
+alone is not enough. Recover the KB from a running container:
+`docker exec minimal-rag cat /app/data/knowledge_base.json > data/knowledge_base.json`,
+then rebuild the index. Anything claiming to verify a clean-checkout path must
+account for this.
+
+**Container log timestamps are UTC; the gate is Dhaka.**
+The container clock runs UTC (+0) while `active_hours` pins Asia/Dhaka (+6). A
+log line reading `13:27` is `19:27` local. Do not read log times as local when
+reasoning about whether the gate should have fired — that mismatch is exactly
+what the `ZoneInfo` pinning exists to survive.
+
+**`tzdata` is present in `python:3.13-slim`** — verified directly against the
+base image, not assumed. If the base image ever changes,
+`ZoneInfo("Asia/Dhaka")` raises `ZoneInfoNotFoundError` at import: a boot crash
+that appears only in Docker and never locally. One-line fix if it happens — add
+`tzdata` to `requirements.txt`, which `zoneinfo` falls back to automatically.
 
 ## Known issues (filed, not in scope of current work)
 
@@ -215,6 +286,9 @@ unproven until you have watched it go red.
   `import re` sits mid-file rather than at the top.
 - Postbacks have no branch of their own in `process_messaging_event`; they fall
   through to the "no text and no attachments" handoff.
+- **Greeting coverage in the KB is thin.** "Hi" retrieves at `0.322` against a
+  `0.30` threshold — an uncomfortable margin on the single most common opening
+  message. Needs more greeting triplets, not a threshold change.
 
 ### Watch out for
 
