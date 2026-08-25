@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A hand-rolled RAG chatbot for **Minimal Limited**, an interior design firm in Dhaka, Bangladesh, serving customers over Facebook Messenger. Customers write in Bangla, Banglish, or English (often mixed within one message); the bot always replies in formal Bangla. No LangChain/LlamaIndex/ChromaDB — every stage of the pipeline (embed → FAISS search → prompt build → OpenAI call → post-process) is plain Python so the data flow stays inspectable. See README.md for the full architecture diagram and design rationale ("Key Design Decisions" section) — read it before changing retrieval thresholds, the language-triplication scheme, or the pause system.
 
-Status: live on a private test Facebook Page under structured user testing. Production rollout is planned and blocked on client-side Meta access — see *Deployment and environments* below.
+Status: **live in production and serving real customers**, published on the Minimal Limited Facebook Page, currently 23:00–09:00 Asia/Dhaka only. A separate test environment runs alongside it. See *Deployment and environments* below.
+
+Because production is live, assume any change you make can reach a real customer. The current work is knowledge-base quality driven by real customer queries, not new features.
 
 ## Commands
 
@@ -82,27 +84,31 @@ Ingestion is a separate, one-time-per-KB-change pipeline (`ingestion/loader.py` 
 
 Two Meta apps, one per environment. This is forced by the platform, not a preference: **each Meta app has exactly one webhook URL**, so test and production cannot share an app and still point at different code.
 
-|             | Test                       | Production                    |
-|-------------|----------------------------|-------------------------------|
-| Meta app    | existing (`1484659980123174`) | new, in the client's business portfolio |
-| Page        | private test page          | Minimal Limited               |
-| Container   | `minimal-rag-test`         | `minimal-rag`                 |
-| Port        | 8001                       | 8000                          |
-| Env file    | `~/.env.test`              | `~/.env.prod`                 |
-| Image tag   | `:latest`                  | `:vX.Y.Z` — **pinned**        |
-| Window      | `0 → 24`                   | `23 → 9`                      |
+|             | Test                          | Production                    |
+|-------------|-------------------------------|-------------------------------|
+| Meta app    | existing (`1484659980123174`) | separate app, client-owned    |
+| Page        | private test page             | Minimal Limited               |
+| Domain      | `staging.minimallimited.com`  | `chat.minimallimited.com`     |
+| Container   | `minimal-rag-test`            | `minimal-rag`                 |
+| Port        | 8001                          | 8000                          |
+| Env file    | `~/.env.test`                 | `~/.env.prod`                 |
+| Image tag   | `:latest`                     | `:vX.Y.Z` — **pinned**        |
+| Window      | `0 → 24`                      | `23 → 9`                      |
+| Status      | Development Mode              | **Published, real customers** |
 
 Host: DigitalOcean, Ubuntu 24.04, Singapore, 2GB / 1 vCPU. nginx terminates TLS and proxies by subdomain. Secrets are injected at `docker run` time via `--env-file`, never baked into the image and never passed as `-e` flags (which would land in shell history).
 
-**Production must never run `:latest`.** Tag every build twice — `:latest` and `:vX.Y.Z`. Test pulls `:latest`; production pulls the explicit version, and only after testers sign off. Without this, any stray `docker push` silently lands on the client's live customer channel. Rollback is then just re-running the previous tag.
+**Production must never run `:latest`.** Tag every build twice — `:latest` and `:vX.Y.Z`. Test pulls `:latest`; production pulls the explicit version, and only after testers sign off. Without this, any stray `docker push` silently lands on the client's live customer channel. Rollback is then just re-running the previous tag. Current production release is `v0.4.0`.
 
-Note that `data/knowledge_base.json` is `COPY`d into the image at build time, so **a version tag pins code and knowledge base together**. That is deliberate — it is what makes a KB-caused regression rollback-able.
+Note that `data/knowledge_base.json` is `COPY`d into the image at build time, so **a version tag pins code and knowledge base together**. That is deliberate — it is what makes a KB-caused regression rollback-able, and it matters more now that KB edits are the main ongoing work.
 
-**Cutover note:** `chat.minimallimited.com` currently serves the *test* bot. At cutover that domain becomes production (it is the client's real domain), test moves to a new subdomain, and the webhook URL in the existing app is updated to match.
+**Deploy during the day (09:00–23:00 Dhaka), when the bot is inert.** Restarting production also clears all in-memory pause state, which mid-window would cancel genuine rep handoffs for real customers.
 
-**App Review may not be required.** Meta's position is that using the API for your own Page as a Direct Developer needs neither Advanced Access nor App Review. Sources conflict, so treat it as unproven. The cheap test: switch the app to Live mode and have someone with no app or Page role message the Page. A reply means no review is needed. The known side effect of skipping review is that customer names appear as "John Doe" without advanced `pages_messaging` — irrelevant here, the bot never uses names.
+**App Review is not required** — settled by evidence, not assumption. Meta allowed the app to be published without review, and on the first live night real customers holding no app, developer or tester role received replies. Standard Access is sufficient for a Direct Developer using the API for their own Page. The known side effect is that customer names appear as "John Doe" without advanced `pages_messaging`, which is irrelevant here because the bot never uses names. Revisit only if a Send API permission error appears in the logs.
 
-**No in-conversation bot disclosure**, deliberately. Meta requires it where applicable law does (California and Germany are the flagged jurisdictions) and recommends it elsewhere; Bangladesh has no such law. Revisit only if App Review turns out to be needed, where its absence is a common rejection reason — the fix is a Messenger Profile API greeting-screen call, which appears before the first message and never inside a thread.
+**No in-conversation bot disclosure**, deliberately. Meta requires it where applicable law does (California and Germany are the flagged jurisdictions) and recommends it elsewhere; Bangladesh has no such law. The App Review angle that would have argued for it is now moot.
+
+**Emergency stop:** set the app status to OFF in the Meta dashboard. That reverts it to Development Mode instantly, so only app roles can reach the bot — faster than stopping the container, and it leaves the infrastructure untouched.
 
 ## Commit conventions
 
@@ -230,11 +236,44 @@ generation/hallucination bug and is not. **Check the logged top score and
 matched intent before touching the prompt.** The fix is a canonical KB triplet
 whose question matches the failing phrasing closely.
 
-**`message_echoes` must be subscribed in two separate places.**
-App level (App Dashboard → Webhooks) *and* page level (Graph API
-`subscribed_apps`). Missing either one means echo events simply never arrive —
-no error, no warning — and rep-takeover detection is silently dead. Everything
-else about the bot continues working, which is what makes it hard to spot.
+**Webhook fields must be subscribed in two separate places, and missing the
+second produces total silence.**
+App level (Messenger API Settings → section 1 → Webhook fields) *and* page level
+(section 2 → the page row's own **Add Subscriptions** button). Ticking the app-level
+fields does NOT subscribe the page; until you use that button the row reads
+"No fields subscribed."
+
+The symptom is nothing at all: no POST in the container log, no POST in the nginx
+access log, no error anywhere, nothing under "Show Recent Errors". Webhook
+verification passes, containers are healthy, the token is valid, the page shows as
+connected, and every app-level field is green. Facebook simply never attempts
+delivery. This cost a full debugging cycle on the production page.
+
+Diagnosis: `sudo grep webhook /var/log/nginx/access.log | tail -20`. If it shows
+the verification GETs but no POSTs, the event never left Meta — which rules out
+tokens, signatures, and the active-hours gate, all of which produce log output.
+
+**A paused thread makes every subsequent test look broken.**
+Once `pause_state` holds a PSID, everything from that customer returns silence in
+~3ms, including tests of completely unrelated branches. A test that "fails" with
+`text during paused thread → bot SILENT` is showing you the pause, not the feature
+under test. Restart the container to clear pause state before testing anything else.
+
+**Graph API Explorer injects the deprecated `manage_pages` scope.**
+Generating a page token there fails with `Invalid Scopes: manage_pages` no matter
+what the permissions list shows — the Explorer carries it internally. Don't use it
+for page tokens. The dashboard token (Messenger API Settings → section 2 →
+Generate) is better anyway: it never expires, while the Explorer's is short-lived
+and needs a long-lived exchange. `pages_manage_metadata` is not needed either — it
+would only let you read the subscription list back, and verifying echo behaviour
+directly (rep replies from Page Inbox, bot goes silent) is the better check.
+
+**`certbot --nginx` can write a server block that drops every connection.**
+On a new subdomain it issued the certificate correctly, then appended a server
+block copied from the nearest template it could find — the catch-all — so the new
+block contained `return 444`. Valid TLS, every connection dropped. It did not
+damage the existing blocks. After any `certbot --nginx` run, read the block it
+wrote rather than assuming it proxies anywhere.
 
 **A fresh clone cannot run.**
 Both `data/knowledge_base.json` and `vector_store/` are gitignored, so the repo
