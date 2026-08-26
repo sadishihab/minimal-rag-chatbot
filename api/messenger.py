@@ -21,10 +21,8 @@ from config import (
     FACEBOOK_VERIFY_TOKEN,
     FACEBOOK_APP_SECRET,
     FACEBOOK_APP_ID,
-    BOT_ACTIVE_START_HOUR,
-    BOT_ACTIVE_END_HOUR,
 )
-from api.active_hours import bot_is_active
+from api.active_hours import bot_is_active, describe_schedule
 from api.send_api import send_text_message
 from api import pause_state
 from api.message_classifier import is_emoji_only, is_all_stickers
@@ -288,10 +286,12 @@ async def receive_webhook(request: Request):
     # forged requests are rejected identically at every hour of the day.
     # Nothing past this point needs the parsed body, so we do not parse it.
     if not bot_is_active():
+        # describe_schedule() rather than the window alone: the moment
+        # BOT_ALWAYS_ACTIVE_DAYS is set, a window-only message misstates the
+        # rule that was actually applied. This line is what someone reads
+        # when asking "why was the bot silent on Friday".
         log.info(
-            f"Outside active hours "
-            f"({BOT_ACTIVE_START_HOUR:02d}:00-{BOT_ACTIVE_END_HOUR:02d}:00 "
-            f"Asia/Dhaka) — webhook event skipped"
+            f"Outside active hours ({describe_schedule()}) — webhook event skipped"
         )
         return JSONResponse(
             status_code=200,

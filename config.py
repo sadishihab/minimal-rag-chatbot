@@ -91,7 +91,29 @@ def _hour_from_env(name: str, default: str) -> int:
 BOT_ACTIVE_START_HOUR = _hour_from_env("BOT_ACTIVE_START_HOUR", "23")
 BOT_ACTIVE_END_HOUR = _hour_from_env("BOT_ACTIVE_END_HOUR", "9")
 
-# Range and degenerate-window checks live in api/active_hours.validate_window,
+
+def _day_list_from_env(name: str, default: str = "") -> tuple[str, ...]:
+    """
+    Parse a comma-separated weekday list into normalised lowercase tokens.
+
+    Splitting and normalisation only — which names are legal is decided by
+    api.active_hours.validate_days, next to the logic that consumes them,
+    exactly as the hour range checks live next to the window logic.
+
+    Whitespace around each name is stripped and empty tokens are dropped,
+    so a trailing comma is not an error.
+    """
+    raw = os.getenv(name, default)
+    return tuple(token.strip().lower() for token in raw.split(",") if token.strip())
+
+
+# Whole days on which the bot is active regardless of the hour window.
+# Friday is the client's holiday: no rep is at Page Inbox all day, so the
+# bot covers Thursday 23:00 through Saturday 09:00 as one continuous
+# stretch. Empty by default — unset means the window alone decides.
+BOT_ALWAYS_ACTIVE_DAYS = _day_list_from_env("BOT_ALWAYS_ACTIVE_DAYS")
+
+# Range, degenerate-window and day-name checks live in api/active_hours,
 # next to the logic that consumes them, and run at that module's import.
 
 # ============================================================
