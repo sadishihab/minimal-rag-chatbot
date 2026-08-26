@@ -31,7 +31,8 @@ This bot solves that by:
 │              FastAPI Webhook  (api/server.py)                        │
 │   • verify FB HMAC-SHA256 signature                                  │
 │   • active-hours gate (api/active_hours.py)                          │
-│     → outside 23:00–09:00 Asia/Dhaka → ack 200, do nothing else      │
+│     → active inside the hour window OR on an always-active           │
+│       weekday (both Asia/Dhaka) → otherwise ack 200 and stop         │
 │   • check pause_state (human-takeover guard)                         │
 │   • route to message_classifier                                      │
 │     → emoji/sticker → ধন্যবাদ (no RAG, no pause)                   │
@@ -107,7 +108,11 @@ This bot solves that by:
 
 **Why a similarity threshold?** Below ~0.3 cosine similarity, retrieved entries are noise. Better to fall back to "let our manager call you" than to confidently answer the wrong question.
 
-**Why an active-hours window?** The bot covers the overnight shift, when nobody is watching Page Inbox. During business hours the reps answer for themselves, and a bot replying alongside them is worse than no bot at all. Outside its window the webhook still acks Facebook with 200 — so FB does not retry or disable the subscription — but nothing else runs: no sends, no pause-state access, no OpenAI calls. The gate sits directly after signature verification, above the loop that dispatches events, so it covers every event type by construction rather than by enumerating them. Times are always Asia/Dhaka regardless of where the container runs, and a window that is missing, out of range, or zero-length stops the app at boot instead of being guessed at.
+**Why an active-hours window?** The bot covers the hours when nobody is watching Page Inbox. **Saturday through Thursday** the reps answer for themselves during business hours, and a bot replying alongside them is worse than no bot at all — so the bot takes the overnight shift only. Outside its active period the webhook still acks Facebook with 200 — so FB does not retry or disable the subscription — but nothing else runs: no sends, no pause-state access, no OpenAI calls. The gate sits directly after signature verification, above the loop that dispatches events, so it covers every event type by construction rather than by enumerating them. Times are always Asia/Dhaka regardless of where the container runs, and a window that is missing, out of range, or zero-length stops the app at boot instead of being guessed at.
+
+**Why whole always-active days as well?** Because the hour window encodes one assumption — that a rep will be at Page Inbox in the morning — and that assumption is false one day a week. **Friday is the client's holiday: no rep is at Page Inbox at all, at any hour.** An hour window cannot express "all of Friday" without also changing the other six days, which is why the day rule exists alongside it rather than replacing it. The two are OR'd, so `BOT_ALWAYS_ACTIVE_DAYS=friday` with the `23`→`9` window makes **Thursday 23:00 → Saturday 09:00 one continuous 34-hour stretch**, with no inert gap at Fri 09:00 or Fri 23:00 for a customer to fall into.
+
+The weekday is evaluated in Asia/Dhaka, like the hours, and for the same reason: the container clock runs UTC, and a weekday read there would start the bot at 06:00 Friday and stop it at 06:00 Saturday — wrong at both ends. An unknown day name stops the app at boot rather than being read as "no always-active days", which would be indistinguishable from the feature being switched off.
 
 **Why a human-takeover pause system?** The bot is a first-responder, not a replacement. When a human rep replies via Page Inbox, the bot detects the echo event, identifies it as a rep reply (by `app_id` mismatch), and pauses itself for 7 days on a sliding window. Attachments, URLs, and phone numbers also trigger handoff. The bot stays completely silent while paused — the rep owns the thread.
 
@@ -319,6 +324,7 @@ Categories cover: greetings, pricing (general + room-specific), packages, materi
 - [x] Message classifier (emoji, sticker, attachment, URL, phone)
 - [x] Echo detection for rep-reply via Page Inbox
 - [x] Configurable active-hours window (Asia/Dhaka, wraps midnight)
+- [x] Always-active weekdays (`BOT_ALWAYS_ACTIVE_DAYS`) for the Friday holiday
 - [x] Interactive CLI for exploratory testing
 - [x] Catalog-based eval system (137 queries × 28 categories)
 - [x] Docker multi-stage build, non-root user
