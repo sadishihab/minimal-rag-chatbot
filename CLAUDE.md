@@ -105,7 +105,13 @@ Host: DigitalOcean, Ubuntu 24.04, Singapore, 2GB / 1 vCPU. nginx terminates TLS 
 
 Note that `data/knowledge_base.json` is `COPY`d into the image at build time, so **a version tag pins code and knowledge base together**. That is deliberate — it is what makes a KB-caused regression rollback-able, and it matters more now that KB edits are the main ongoing work.
 
-**Deploy during the day (09:00–23:00 Dhaka), when the bot is inert.** Restarting production also clears all in-memory pause state, which mid-window would cancel genuine rep handoffs for real customers.
+**Deploy only while the bot is inert — and derive that from the configured schedule, not from fixed hours.** The safe window is the complement of the gate: outside `BOT_ACTIVE_START_HOUR`..`BOT_ACTIVE_END_HOUR` **and** not on a `BOT_ALWAYS_ACTIVE_DAYS` weekday, Asia/Dhaka. Read the values actually set in `~/.env.prod` before deploying rather than assuming the defaults; `describe_schedule()` renders the rule set the running container is applying, and it appears in every `Outside active hours (...)` log line, so `docker logs minimal-rag | grep 'Outside active hours'` tells you what production really thinks its schedule is.
+
+Restarting production clears all in-memory pause state, so any restart while the bot is active cancels every rep handoff currently in force.
+
+With the intended production config (`23`→`9` plus `BOT_ALWAYS_ACTIVE_DAYS=friday`) that means 09:00–23:00 Dhaka, Saturday through Thursday — and **there is no safe deploy window on a Friday at all.** The bot runs Thu 23:00 → Sat 09:00 as one continuous 34-hour stretch with no inert gap anywhere inside it. A restart in that stretch cancels every active handoff on the one day nobody is at Page Inbox, so the bot resumes talking to customers a rep had taken over and it goes unnoticed until Saturday morning.
+
+If a Friday deploy is genuinely unavoidable, note that the emergency stop below does **not** rescue this: it stops new traffic reaching the bot, but the pause state is lost either way and the cancelled handoffs resurface the moment the app is switched back on. Treat a Friday deploy as accepting that cost and tell the client, or wait until Saturday 09:00.
 
 **App Review is not required** — settled by evidence, not assumption. Meta allowed the app to be published without review, and on the first live night real customers holding no app, developer or tester role received replies. Standard Access is sufficient for a Direct Developer using the API for their own Page. The known side effect is that customer names appear as "John Doe" without advanced `pages_messaging`, which is irrelevant here because the bot never uses names. Revisit only if a Send API permission error appears in the logs.
 
