@@ -198,7 +198,34 @@ always-active; setting both to the same value is rejected at startup.
 ```
 BOT_ACTIVE_START_HOUR=23
 BOT_ACTIVE_END_HOUR=9
+BOT_ALWAYS_ACTIVE_DAYS=
 ```
+
+`BOT_ALWAYS_ACTIVE_DAYS` adds whole days on which the bot is active
+regardless of the hour window — the bot is active when it is **inside the
+window OR on a listed day**. It takes comma-separated full English weekday
+names (`friday`, or `friday,saturday`); matching is case-insensitive,
+whitespace around each name is ignored, and a trailing comma is fine.
+Empty or unset is the default and leaves behaviour exactly as it was.
+
+Full names only — `fri` is rejected, so there is one spelling per day to
+get wrong, and the error names all seven. An unknown name **stops the app
+from starting** rather than being read as "no always-active days", which
+would be indistinguishable from the feature being switched off.
+
+Weekdays are evaluated in Asia/Dhaka, like the hours. This matters: the
+container clock runs UTC, and a weekday read there would switch the bot on
+at 06:00 Friday and off at 06:00 Saturday.
+
+Production runs `BOT_ALWAYS_ACTIVE_DAYS=friday` with the `23`/`9` window,
+which makes **Thursday 23:00 → Saturday 09:00 one continuous 34-hour
+stretch** with no gap at Fri 09:00 or Fri 23:00: the window carries
+Thu 23:00 → Fri 09:00, the day rule carries all of Friday, and the window
+carries Sat 00:00 → 09:00. Friday is the client's holiday, when no rep is
+watching Page Inbox at all.
+
+Holiday date lists (Eid) are deliberately not supported — this is weekdays
+only.
 
 ### 3. Add your knowledge base
 

@@ -48,7 +48,7 @@ ruff check .
 
 Request flow (Messenger path — `api/messenger.py` → `generation/generator.py`):
 
-1. **`api/messenger.py`** — Messenger webhook (`/webhook`). Verifies the FB HMAC-SHA256 signature, then applies the **active-hours gate** (`api/active_hours.py`): outside `BOT_ACTIVE_START_HOUR`..`BOT_ACTIVE_END_HOUR` (default 23→9, always Asia/Dhaka, wraps midnight) it acks FB with 200 and does nothing else — no sends, no `pause_state` reads or writes, no RAG. The gate sits above the `entry[].messaging[]` loop so it covers every event type including echoes and postbacks; do not move it below that loop or into `process_messaging_event`. `validate_window()` rejects out-of-range and zero-length windows at import — `0`/`24` is the explicit always-active config. Inside the window, each event is routed *before* it ever reaches the RAG pipeline:
+1. **`api/messenger.py`** — Messenger webhook (`/webhook`). Verifies the FB HMAC-SHA256 signature, then applies the **active-hours gate** (`api/active_hours.py`): the bot is active when it is inside `BOT_ACTIVE_START_HOUR`..`BOT_ACTIVE_END_HOUR` (default 23→9, always Asia/Dhaka, wraps midnight) **OR** on a weekday listed in `BOT_ALWAYS_ACTIVE_DAYS` (default empty; production is `friday`, making Thu 23:00 → Sat 09:00 one continuous 34-hour stretch). Otherwise it acks FB with 200 and does nothing else — no sends, no `pause_state` reads or writes, no RAG. The gate sits above the `entry[].messaging[]` loop so it covers every event type including echoes and postbacks; do not move it below that loop or into `process_messaging_event`. `validate_window()` rejects out-of-range and zero-length windows at import, and `validate_days()` rejects unknown day names the same way — `0`/`24` is the explicit always-active config. Both fail at import so a typo stops the container booting rather than silently meaning "no always-active days". When active, each event is routed *before* it ever reaches the RAG pipeline:
    - `is_echo` message where `app_id != FACEBOOK_APP_ID` → a human rep replied via Page Inbox → `pause_state.pause_thread()` (bot goes silent for that customer for 7 days, sliding window)
    - thread already paused → bot stays silent for text; attachments still get an acknowledgment
    - attachment that's all stickers → "ধন্যবাদ" only, no pause
@@ -70,7 +70,7 @@ Ingestion is a separate, one-time-per-KB-change pipeline (`ingestion/loader.py` 
 
 **Pause state** (`api/pause_state.py`) is an in-memory process-local dict — lost on restart by design for now (self-healing: rep's next reply re-pauses). This is only acceptable because the active-hours gate means the bot effectively starts fresh each night; a 7-day pause never needs to survive a restart in the current deployment. Do not add persistence without checking the README roadmap; SQLite-backed persistence is a known open item and becomes necessary if the window ever widens toward always-on.
 
-**Config** (`config.py`) is the single source of truth for paths, model names (`gpt-4o-mini`, `text-embedding-3-small`), `TOP_K`, `SIMILARITY_THRESHOLD`, `BOT_ACTIVE_START_HOUR`/`BOT_ACTIVE_END_HOUR`, and input/body-size limits — check here before hardcoding any of those values elsewhere.
+**Config** (`config.py`) is the single source of truth for paths, model names (`gpt-4o-mini`, `text-embedding-3-small`), `TOP_K`, `SIMILARITY_THRESHOLD`, `BOT_ACTIVE_START_HOUR`/`BOT_ACTIVE_END_HOUR`/`BOT_ALWAYS_ACTIVE_DAYS`, and input/body-size limits — check here before hardcoding any of those values elsewhere.
 
 `api/server.py` instantiates one `Generator` at FastAPI startup (`app.state.generator`) and reuses it for every request/webhook event — never construct a new `Generator` (or `Retriever`) per-request, it reloads the FAISS index each time.
 
@@ -94,6 +94,7 @@ Two Meta apps, one per environment. This is forced by the platform, not a prefer
 | Env file    | `~/.env.test`                 | `~/.env.prod`                 |
 | Image tag   | `:latest`                     | `:vX.Y.Z` — **pinned**        |
 | Window      | `0 → 24`                      | `23 → 9`                      |
+| Always-active days | *(none)*               | `friday`                      |
 | Status      | Development Mode              | **Published, real customers** |
 
 Host: DigitalOcean, Ubuntu 24.04, Singapore, 2GB / 1 vCPU. nginx terminates TLS and proxies by subdomain. Secrets are injected at `docker run` time via `--env-file`, never baked into the image and never passed as `-e` flags (which would land in shell history).
@@ -337,3 +338,21 @@ unproven until you have watched it go red.
   in `bot_is_active()`'s return value and only shows at the clock source —
   which is why `test_bot_is_active_ignores_host_timezone` asserts on the
   returned `utcoffset()` as well as on the boolean.
+
+- **The same trap applies to the weekday, and the OR makes it worse.**
+  `is_always_active_day()` goes through the same `_to_dhaka()` helper, so it
+  inherits that silent repair. On top of it, the `or` in `is_bot_active_at()`
+  actively hides a wrong weekday: UTC and Dhaka disagree about the day during
+  exactly Dhaka 00:00–05:59, and that region sits **entirely inside** the
+  23→9 window, so `is_within_active_hours()` already returns `True` for every
+  instant a naive `dt.weekday()` would get wrong. A test using the production
+  window passes identically whether the weekday is read before or after
+  conversion. `test_weekday_is_read_in_dhaka_not_utc` therefore asserts on the
+  day predicate **alone**, and `test_combined_predicate_reads_the_weekday_in_dhaka`
+  uses a **9→17** window where the day rule alone decides. Do not "tidy" that
+  second test to use the production values — it guts it.
+
+- **`WEEKDAY_NAMES` is a hardcoded tuple, not `calendar.day_name` or
+  `strftime("%A")`.** Both of those are locale-dependent: under a non-English
+  `LC_TIME` they would fail to match `"friday"` and read a valid config as
+  "no always-active days".
