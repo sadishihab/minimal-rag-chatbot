@@ -253,8 +253,17 @@ uvicorn api.server:app --reload --port 8000
 ### 6. Run tests
 
 ```bash
-pytest tests/test_loader.py tests/test_message_classifier.py -v
+pytest tests/ -v
+
+# test_message_classifier.py is script-style: its checks run under
+# __main__, so pytest collects ZERO tests from it and reports success
+# regardless. It has to be run directly, and the prefix is required —
+# nothing puts the repo root on sys.path otherwise.
+PYTHONPATH=. python tests/test_message_classifier.py
 ```
+
+`tests/test_api.py` errors at collection — it is a script-style harness for
+`python -m tests.test_api` against a live server, not a pytest suite.
 
 ---
 
