@@ -28,7 +28,7 @@ uvicorn api.server:app --reload --port 8000        # full server (POST /chat, GE
 
 # Tests
 pytest tests/ -v                                   # test_api.py errors at collection — see Known issues
-python tests/test_message_classifier.py            # script-style, NOT collected by pytest
+PYTHONPATH=. python tests/test_message_classifier.py  # script-style, NOT collected by pytest
 pytest tests/test_active_hours.py::test_name -v    # single test
 
 # KB retrieval eval (137 queries / 28 categories, hits real OpenAI API — costs money)
@@ -68,7 +68,9 @@ Ingestion is a separate, one-time-per-KB-change pipeline (`ingestion/loader.py` 
 
 **Knowledge base language scheme**: every Q&A is stored three times (Bangla, Banglish, English versions of the *question*, all pointing to the same Bangla *answer*), so embedding search matches regardless of which script/language the customer typed in. The KB is embedded on the question, never the answer — answers are retrieved as metadata, not searched. This is why KB edits should always add/edit in triplets, not single entries, unless deliberately doing something else.
 
-**Pause state** (`api/pause_state.py`) is an in-memory process-local dict — lost on restart by design for now (self-healing: rep's next reply re-pauses). This is only acceptable because the active-hours gate means the bot effectively starts fresh each night; a 7-day pause never needs to survive a restart in the current deployment. Do not add persistence without checking the README roadmap; SQLite-backed persistence is a known open item and becomes necessary if the window ever widens toward always-on.
+**Pause state** (`api/pause_state.py`) is an in-memory process-local dict — lost on restart by design for now (self-healing: rep's next reply re-pauses). Do not add persistence without checking the README roadmap; SQLite-backed persistence is a known open item.
+
+**The justification for that has weakened, and the doc used to overstate it.** It read "the bot effectively starts fresh each night, so a 7-day pause never needs to survive a restart" — true of a 10-hour window, false since `BOT_ALWAYS_ACTIVE_DAYS=friday`. The bot now runs Thu 23:00 → Sat 09:00 as one 34-hour stretch, so a pause set by a rep on Thursday night has to survive far longer, and the self-healing story depends on a rep replying again. **No rep works Friday** — that is the entire reason the day is covered — so a mid-stretch restart silently un-pauses a thread a rep had taken over, the bot resumes talking to that customer, and nobody notices until Saturday. Weigh that before restarting production mid-stretch, and treat SQLite persistence as closer to necessary than the roadmap entry implies.
 
 **Config** (`config.py`) is the single source of truth for paths, model names (`gpt-4o-mini`, `text-embedding-3-small`), `TOP_K`, `SIMILARITY_THRESHOLD`, `BOT_ACTIVE_START_HOUR`/`BOT_ACTIVE_END_HOUR`/`BOT_ALWAYS_ACTIVE_DAYS`, and input/body-size limits — check here before hardcoding any of those values elsewhere.
 
@@ -125,7 +127,7 @@ report what you did.
 
    ```bash
    pytest tests/ -v
-   python tests/test_message_classifier.py
+   PYTHONPATH=. python tests/test_message_classifier.py
    ```
 
    `tests/test_api.py` errors at collection (see *Known issues*) — that is
@@ -306,7 +308,11 @@ unproven until you have watched it go red.
 1. **`tests/test_message_classifier.py` collects zero tests under pytest.** Its
    functions are named `run_emoji_tests`/`run_sticker_tests` and only execute
    under `if __name__ == "__main__"`, so pytest finds nothing to run and
-   reports success. Run it as `python tests/test_message_classifier.py`.
+   reports success. Run it as
+   `PYTHONPATH=. python tests/test_message_classifier.py` — the prefix is
+   required: run directly, the repo root is not on `sys.path` and the import
+   of `api.message_classifier` fails with `ModuleNotFoundError`. Under pytest
+   that never shows, because pytest inserts the rootdir itself.
 2. **`tests/test_api.py::test_health` returns `False` and pytest still reports
    it as passed.** It `return`s a bool instead of asserting, so the result is
    discarded; pytest only warns (`PytestReturnNotNoneWarning`). It reports
