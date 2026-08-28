@@ -56,6 +56,12 @@ Request flow (Messenger path — `api/messenger.py` → `generation/generator.py
    - attachment that's all stickers → "ধন্যবাদ" only, no pause
    - any other attachment, or text containing a URL → handoff message + pause (needs human review)
    - emoji-only text → "ধন্যবাদ" only, no pause, no RAG call
+   - text that is *entirely* one of a closed list of acknowledgements ("ok",
+     "thanks", "আচ্ছা", "ঠিক আছে", …) → "ধন্যবাদ" only, no pause, no RAG call.
+     **Whole-message match only** — "ok koto lagbe?" is a question and
+     "ok 01775760496" is a shared number, so both fall through. Adding a
+     variant to the list is a maintainer decision, pinned by
+     `test_the_literal_list_is_exactly_what_was_agreed`.
    - otherwise → falls through to `generator.generate(text)`
 
    Above all of those branches (and below the echo branch), any inbound text
@@ -316,6 +322,13 @@ original "share your mobile number" closing no matter what state the flag is
 in. Anyone QA-ing this feature through the CLI will conclude it is broken.
 It has to be tested through Messenger, or through
 `tests/test_phone_shared_flow.py`.
+
+The same is true of every branch that sits **above** `generate()` in
+`process_messaging_event` — phone-shared marking, the CTA substitution, and
+now the acknowledgement branch (`is_acknowledgement`). "Ok" typed into
+`python -m tests.chat_cli` or `POST /chat` still produces a full RAG answer
+and always will, because neither path goes through `api/messenger.py`. The
+CLI is the wrong instrument for anything in that layer.
 
 **`grep 'CTA drift'` is the health check for the substitution.**
 The reply is model output, not raw KB text, so exact-string matching only works
