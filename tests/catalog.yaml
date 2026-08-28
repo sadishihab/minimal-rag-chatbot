@@ -1,0 +1,290 @@
+# ============================================================================
+# tests/catalog.yaml — retrieval regression catalog
+#
+# Run with:  python -m tests.catalog_runner
+# Writes:    tests/catalog_report_YYYY-MM-DD_HH-MM.md  (gitignored)
+# Exit code: 1 if any case hard-FAILs
+#
+# Every case here asserts on the RETRIEVED INTENT, not on answer wording. The
+# failure mode this project has actually hit is retrieval landing on the wrong
+# intent and producing a confident, fluent, wrong answer — not the model
+# phrasing a correct answer badly. Asserting on Bangla answer text would also
+# mean writing Bangla for every case, which is the maintainer's to own.
+#
+# This runs through Generator.generate(), so it CANNOT see the phone-number
+# CTA substitution — that happens at the Messenger send boundary in
+# api/messenger.py:send_reply(). No case here should ever expect substituted
+# text. Nor should any query contain a Bangladeshi mobile number: generate()
+# would hit its phone bypass and never reach retrieval at all.
+#
+# Generation is off by default (it is ~99.95% of the run cost and takes the
+# run from ~5s to ~2m30s). It is on for thin_margins only, where the actual
+# reply to a near-threshold greeting is the thing being looked at.
+#
+# Scores in the notes are as measured on 2026-08-28 against KB v3.6
+# (339 entries). They are context, not assertions — min_score is the assertion.
+# ============================================================================
+
+- category: regression_site_visit_frame
+  description: >-
+    The site_visit frame collision, diagnosed 2026-08-28. "apnara ki site
+    visit koren?" retrieved ZERO site_visit entries and landed on
+    services_offered at 0.811 — above threshold, confidently wrong. Fixed by
+    adding the site_visit_apnara_ki_* triplet in KB v3.6.
+    THE LAST FOUR CASES ARE THE POINT: they are the neighbours in the same
+    "apnara ki ..." embedding region, and they must NOT move when site_visit
+    entries are added or edited. If one of them changes intent, the new
+    site_visit wording is wrong — not the test.
+  queries:
+    # --- the five that were broken or at risk, now fixed ---
+    - q: "apnara ki site visit koren?"
+      expect_intent: site_visit
+      min_score: 0.95
+      note: "was 0.811 services_offered; now self-matches the new entry"
+    - q: "apnara ki site visit korte parben?"
+      expect_intent: site_visit
+      min_score: 0.80
+      note: "was 0.766 services_offered"
+    - q: "site visit koren?"
+      expect_intent: site_visit
+      min_score: 0.60
+      note: "was already correct at 0.672; guards against the fix breaking it"
+    - q: "apnara ki site visit e ashen?"
+      expect_intent: site_visit
+      min_score: 0.75
+      note: "was already correct at 0.828 via the home_visit entry"
+    - q: "do you do site visits?"
+      expect_intent: site_visit
+      min_score: 0.90
+      note: "was 0.847 — under the 0.85 verbatim gate in prompt_builder:30"
+
+    # --- the four neighbours that must not move ---
+    - q: "apnara ki ki kaj koren?"
+      expect_intent: services_offered
+      min_score: 0.95
+      note: "NEIGHBOUR — self-match; the attractor for the whole frame"
+    - q: "apnara ki ki service den?"
+      expect_intent: services_offered
+      min_score: 0.95
+      note: "NEIGHBOUR — self-match"
+    - q: "apnara ki dhakar bahire kaj koren?"
+      expect_intent: location_coverage
+      min_score: 0.95
+      note: "NEIGHBOUR — self-match"
+    - q: "apnara ki dhakar bahire interior koren?"
+      expect_intent: location_coverage
+      min_score: 0.95
+      note: "NEIGHBOUR — self-match"
+
+# ----------------------------------------------------------------------------
+# READ THIS BEFORE EDITING THE NEXT CATEGORY.
+#
+# The site_visit case above is not a one-off. It is one instance of a SYSTEMIC
+# FRAME-VS-TOPIC COLLISION: the Banglish question frame "apnara ki ... koren?"
+# is itself a strong embedding signal, strong enough to beat the topic words
+# inside it. A query in that frame gets pulled to whichever intent already owns
+# the frame, regardless of what it is actually asking about.
+#
+#   * TEN of the twelve intents probed land on the wrong intent.
+#   * TWO of those are ABOVE the 0.85 verbatim gate in prompt_builder:30 —
+#     "apnara ki kivabe kaj shuru koren?" at 0.884 and
+#     "apnara ki basar interior koren?" at 0.866. At that score the prompt
+#     instructs the model to return the WRONG answer verbatim. That is worse
+#     than the site_visit case ever was.
+#   * The attractor is "apnara ki ki kaj koren?" (services_offered), which
+#     wins 6 of the 10.
+#
+# All ten are recorded as xfail deliberately. They are NOT fixed here: fixing
+# ten intents in the same change that creates this baseline would mean the
+# baseline describes a knowledge base that never shipped. The fix is one
+# canonical KB triplet per affected intent, in the failing frame, and it needs
+# the maintainer's Bangla. Separate piece of work.
+#
+# When one is fixed, its case will flip to XPASS. That is the signal to clear
+# the flag — XPASS means this file is now lying about the state of the world.
+# ----------------------------------------------------------------------------
+- category: frame_collision
+  description: >-
+    Systemic "apnara ki ... koren?" frame-vs-topic collision. Ten of twelve
+    intents have no entry in this frame and are captured by whichever intent
+    does. Recorded, not fixed — see the comment block above this category.
+  queries:
+    # --- above the 0.85 verbatim gate: the model is told to return these
+    #     wrong answers word for word ---
+    - q: "apnara ki kivabe kaj shuru koren?"
+      expect_intent: process
+      xfail: true
+      note: "0.884 services_offered — ABOVE the 0.85 verbatim gate"
+    - q: "apnara ki basar interior koren?"
+      expect_intent: home_interior
+      xfail: true
+      note: "0.866 location_coverage — ABOVE the 0.85 verbatim gate"
+
+    # --- below the gate, still wrong ---
+    - q: "apnara ki price list den?"
+      expect_intent: pricing
+      xfail: true
+      note: "0.825 services_offered"
+    - q: "apnara ki package offer koren?"
+      expect_intent: main_packages
+      xfail: true
+      note: "0.802 services_offered"
+    - q: "apnara ki office interior koren?"
+      expect_intent: office_interior
+      xfail: true
+      note: "0.802 location_coverage"
+    - q: "apnara ki phone e kotha bolen?"
+      expect_intent: contact
+      xfail: true
+      note: "0.794 services_offered"
+    - q: "apnara ki installment e payment nen?"
+      expect_intent: payment_schedule
+      xfail: true
+      note: "0.756 services_offered"
+    - q: "apnara ki package e material den?"
+      expect_intent: package_materials
+      xfail: true
+      note: "0.739 services_offered"
+    - q: "apnara ki shudhu kitchen koren?"
+      expect_intent: specific_rooms_scope
+      xfail: true
+      note: "0.721 services_offered"
+    - q: "apnara ki sqft hisebe cost koren?"
+      expect_intent: size_based_pricing
+      xfail: true
+      note: >-
+        0.704 site_visit. Was 0.697 services_offered before KB v3.6 — the new
+        site_visit entry changed which wrong intent wins by 0.007, it did not
+        create this failure. size_based_pricing is not in the top 10 either way.
+
+    # --- the two intents that survive the frame; these are hard PASS ---
+    - q: "apnara ki bhalo brand er material use koren?"
+      expect_intent: materials_brands
+      note: "0.820 — survives because materials_brands has a near-frame entry"
+    - q: "apnara ki Interior Essence package koren?"
+      expect_intent: interior_essence_package
+      note: "0.732 — survives; the package name is a strong enough topic signal"
+
+- category: thin_margins
+  description: >-
+    Short openers near the 0.30 similarity threshold. WATCH ONLY — recorded,
+    never pass/fail, because the right response to a drifting margin is a KB
+    decision, not a red build. Generation is ON here: the point is to see what
+    Bangla a customer actually gets back from a near-threshold greeting.
+  generate: true
+  queries:
+    - q: "hey"
+      watch: true
+      note: "0.307 contact — +0.007 over the 0.30 threshold"
+    - q: "salam"
+      watch: true
+      note: "0.321 general_inquiry"
+    - q: "Hi"
+      watch: true
+      note: "0.322 contact. Documented in CLAUDE.md as the thinnest margin."
+    - q: "Hello"
+      watch: true
+      note: "0.330 contact"
+    - q: "hi"
+      watch: true
+      note: >-
+        0.335 materials_brands — lands on a DIFFERENT intent than "Hi" at
+        0.322. Capitalisation alone moves it; that is how thin this is.
+    - q: "hlw"
+      watch: true
+      note: "0.352 materials_brands"
+    - q: "hello"
+      watch: true
+      note: "0.354 contact"
+    - q: "assalamualaikum"
+      watch: true
+      note: "0.355 home_interior"
+    - q: "স্লামালাইকুম"
+      watch: true
+      note: >-
+        0.420 location_coverage, matching a Comilla coverage question. The
+        highest-scoring opener and the most irrelevant context of the set.
+    - q: "আসসালামু আলাইকুম"
+      watch: true
+      note: >-
+        Retrieves NOTHING above threshold, though prompt_builder:25 names it as
+        a greeting. The greeting template covers it, so this is survivable.
+    - q: "good morning"
+      watch: true
+      note: "Retrieves nothing above threshold; also named in prompt_builder:25"
+    - q: "ki obostha"
+      watch: true
+      note: "Retrieves nothing above threshold; not named in the greeting rule"
+
+- category: baseline_coverage_banglish
+  description: >-
+    One near-paraphrase per intent, Banglish only — the dominant customer
+    language and the one the frame collision lives in. Deliberately NOT
+    verbatim KB questions, which would self-match at 1.000 and prove only that
+    the index matches the KB. Bangla and English tranches are separate work;
+    inventing customer phrasings in those languages needs the maintainer's ear.
+  queries:
+    - q: "chittagong e kaj koren?"
+      expect_intent: location_coverage
+      note: "0.932"
+    - q: "premium package e ki material thake?"
+      expect_intent: package_materials
+      note: "0.908"
+    - q: "apnader package gulo ki ki?"
+      expect_intent: main_packages
+      note: "0.843"
+    - q: "apnader phone number ta den"
+      expect_intent: contact
+      note: "0.832 — no digits, so generate()'s phone bypass does not fire"
+    - q: "apnader service gulo ki ki?"
+      expect_intent: services_offered
+      note: "0.804"
+    - q: "Interior Essence e ki ki ache?"
+      expect_intent: interior_essence_package
+      note: "0.773"
+    - q: "1500 sqft flat er interior khoroch koto?"
+      expect_intent: size_based_pricing
+      note: "0.763"
+    - q: "kaj ta kivabe shuru hoy?"
+      expect_intent: process
+      note: "0.682"
+    - q: "interior korate chai"
+      expect_intent: home_interior
+      note: >-
+        0.682. Labelled home_interior, not general_inquiry — a bare intent to
+        do interior work is a home_interior query and the KB answers it as one.
+    - q: "custom wardrobe banate parben?"
+      expect_intent: custom_furniture
+      note: "0.676"
+    - q: "flat er interior korte chai"
+      expect_intent: home_interior
+      note: "0.666"
+    - q: "kon company r board use koren?"
+      expect_intent: materials_brands
+      note: "0.600"
+    - q: "shudhu drawing room korano jabe?"
+      expect_intent: specific_rooms_scope
+      note: "0.570"
+    - q: "site visit lagbe"
+      expect_intent: site_visit
+      note: "0.568 — non-question phrasing, no frame to collide with"
+
+    # --- known-failing, not frame collisions: plain topic-adjacency errors ---
+    - q: "sofa er dam koto?"
+      expect_intent: pricing
+      xfail: true
+      note: >-
+        0.640 home_interior, matching "interior er dam koto?". A single-item
+        price question captured by the whole-home price question.
+    - q: "office er interior er kaj koren?"
+      expect_intent: office_interior
+      xfail: true
+      note: >-
+        0.585 home_interior, matching "flat er interior koren?". office_interior
+        has only 9 entries and loses to home_interior's 29.
+    - q: "taka kivabe dite hobe?"
+      expect_intent: payment_schedule
+      xfail: true
+      note: >-
+        0.574 services_offered, matching "kaj shesh korte koto somoy lage?" —
+        a payment question answered with a project timeline.
