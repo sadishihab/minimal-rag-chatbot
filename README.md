@@ -172,8 +172,8 @@ minimal_rag/
 │   ├── test_api.py
 │   ├── test_message_classifier.py
 │   ├── chat_cli.py               # interactive CLI for exploratory testing
-│   ├── test_catalog.py           # eval runner (reads tests/catalog.yaml)
-│   ├── catalog.yaml              # 137 queries across 28 categories
+│   ├── catalog_runner.py         # eval runner (reads tests/catalog.yaml)
+│   ├── catalog.yaml              # 50 diagnosed retrieval cases, 4 categories
 │   └── audit_newlines.py         # KB hygiene utility
 ├── vector_store/                 # FAISS index (gitignored, regenerated locally)
 ├── config.py                     # Central config: paths, models, thresholds
@@ -324,7 +324,7 @@ The KB itself is proprietary and gitignored. The `data/knowledge_base.sample.jso
 A catalog-based eval system runs 137 queries across 28 categories through the full RAG pipeline and produces a markdown report with retrieval scores, matched intents, and bot replies for human review.
 
 ```bash
-python -m tests.test_catalog
+python -m tests.catalog_runner
 # Output: tests/catalog_report_YYYY-MM-DD_HH-MM.md
 ```
 

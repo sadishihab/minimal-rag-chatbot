@@ -31,9 +31,11 @@ pytest tests/ -v                                   # test_api.py errors at colle
 PYTHONPATH=. python tests/test_message_classifier.py  # script-style, NOT collected by pytest
 pytest tests/test_active_hours.py::test_name -v    # single test
 
-# KB retrieval eval (137 queries / 28 categories, hits real OpenAI API — costs money)
-python -m tests.test_catalog
-# → writes tests/catalog_report_YYYY-MM-DD_HH-MM.md
+# KB retrieval eval (50 cases / 4 categories, reads tests/catalog.yaml).
+# Hits the real OpenAI API — but generation is off by default, so a full run
+# is ~$0.006 and ~47s. Exits 1 on any hard FAIL. NOT a pytest suite.
+python -m tests.catalog_runner
+# → writes tests/catalog_report_YYYY-MM-DD_HH-MM.md (gitignored)
 
 # KB hygiene check
 python -m tests.audit_newlines
@@ -369,9 +371,18 @@ that appears only in Docker and never locally. One-line fix if it happens — ad
 
 ### Tests that report success while asserting nothing
 
-Three instances found so far. This is the failure mode the *Verification
-conventions* section above exists to prevent, so treat a new green suite as
-unproven until you have watched it go red.
+Three open instances, plus one closed. This is the failure mode the
+*Verification conventions* section above exists to prevent, so treat a new
+green suite as unproven until you have watched it go red.
+
+0. **CLOSED — `tests/test_catalog.py` was named like a suite, collected zero
+   tests under pytest, and contained no assertions at all.** Renamed to
+   `tests/catalog_runner.py`, which no longer claims to be a test, and given
+   real pass/fail semantics with a non-zero exit on hard failures. It was
+   renamed rather than given a `test_*` entry point on purpose: it needs a
+   live `OPENAI_API_KEY`, the proprietary KB, and a built FAISS index, and
+   putting that inside `pytest tests/` would cost money on every run and
+   break the suite's ability to run offline anywhere.
 
 1. **`tests/test_message_classifier.py` collects zero tests under pytest.** Its
    functions are named `run_emoji_tests`/`run_sticker_tests` and only execute
