@@ -62,6 +62,13 @@ Request flow (Messenger path — `api/messenger.py` → `generation/generator.py
      "ok 01775760496" is a shared number, so both fall through. Adding a
      variant to the list is a maintainer decision, pinned by
      `test_the_literal_list_is_exactly_what_was_agreed`.
+     The single relaxation is a **trailing** run of emoji: "ok 👍" matches,
+     "👍 ok" and "ok 👍 koto lagbe?" do not, and neither does "ok bhai" — emoji
+     are treated as punctuation-like, a trailing word is not. Stripping reuses
+     `_is_emoji_char`, so this branch and the emoji-only one cannot disagree
+     about what an emoji is. It sits **below** emoji-only for that reason: a
+     bare "👍" belongs to that branch, and `is_acknowledgement` declines it
+     independently since stripping leaves nothing.
    - otherwise → falls through to `generator.generate(text)`
 
    Above all of those branches (and below the echo branch), any inbound text
@@ -154,7 +161,7 @@ Two Meta apps, one per environment. This is forced by the platform, not a prefer
 
 Host: DigitalOcean, Ubuntu 24.04, Singapore, 2GB / 1 vCPU. nginx terminates TLS and proxies by subdomain. Secrets are injected at `docker run` time via `--env-file`, never baked into the image and never passed as `-e` flags (which would land in shell history).
 
-**Production must never run `:latest`.** Tag every build twice — `:latest` and `:vX.Y.Z`. Test pulls `:latest`; production pulls the explicit version, and only after testers sign off. Without this, any stray `docker push` silently lands on the client's live customer channel. Rollback is then just re-running the previous tag. Current production release is `v0.4.0`.
+**Production must never run `:latest`.** Tag every build twice — `:latest` and `:vX.Y.Z`. Test pulls `:latest`; production pulls the explicit version, and only after testers sign off. Without this, any stray `docker push` silently lands on the client's live customer channel. Rollback is then just re-running the previous tag. Current production release is `v0.6.0`.
 
 Note that `data/knowledge_base.json` is `COPY`d into the image at build time, so **a version tag pins code and knowledge base together**. That is deliberate — it is what makes a KB-caused regression rollback-able, and it matters more now that KB edits are the main ongoing work.
 
