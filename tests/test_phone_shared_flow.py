@@ -6,10 +6,6 @@ Covers the two things the string tests cannot: WHERE the flag gets set
 relative to the routing branches, and that every send site actually goes
 through the substitution wrapper.
 
-Spies are deliberately re-declared here rather than shared with
-test_messenger_gate.py — extracting them into a conftest.py is a file move,
-and those need asking first.
-
 These mount the messenger router on a bare FastAPI app with a stub generator,
 so they need no FAISS index, no OPENAI_API_KEY, and no network.
 """
@@ -25,6 +21,7 @@ from fastapi.testclient import TestClient
 from api import messenger, pause_state, phone_shared_state
 from api.cta_substitution import CTA_FULL, CTA_SHORT, REPLACEMENT_GENERIC
 from generation.phone_detector import PHONE_ACKNOWLEDGMENT
+from tests.conftest import GeneratorSpy, SendSpy
 
 TEST_APP_SECRET = "test-app-secret"
 TEST_APP_ID = 111111111111111
@@ -37,33 +34,8 @@ NUMBER_TEXT = "amar number 01775760496"
 
 
 # ============================================================
-# Spies and fixtures
+# Fixtures  (spies live in tests/conftest.py)
 # ============================================================
-class SendSpy:
-    def __init__(self):
-        self.calls = []
-
-    def __call__(self, recipient_psid, text):
-        self.calls.append((recipient_psid, text))
-        return True
-
-    @property
-    def last_text(self):
-        return self.calls[-1][1]
-
-
-class GeneratorSpy:
-    """Returns whatever it is told to, so a test can inject a CTA-bearing reply."""
-
-    def __init__(self, reply="স্টাব উত্তর"):
-        self.reply = reply
-        self.calls = []
-
-    def generate(self, text):
-        self.calls.append(text)
-        return self.reply
-
-
 @pytest.fixture(autouse=True)
 def clean_state():
     """

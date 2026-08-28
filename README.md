@@ -162,6 +162,7 @@ minimal_rag/
 │   ├── cta_substitution.py       # strips the "share your number" ask
 │   └── request_context.py
 ├── tests/                        # pytest suites + eval tools
+│   ├── conftest.py               # shared test doubles (Send/Pause/Generator)
 │   ├── test_loader.py
 │   ├── test_active_hours.py
 │   ├── test_messenger_gate.py

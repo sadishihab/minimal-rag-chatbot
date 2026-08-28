@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from api import messenger
+from tests.conftest import GeneratorSpy, PauseStateSpy, SendSpy
 
 TEST_APP_SECRET = "test-app-secret"
 TEST_APP_ID = 111111111111111      # "our" bot's app id
@@ -25,51 +26,7 @@ PAGE = "PAGE_PSID_9876543210"
 
 
 # ============================================================
-# Spies
-# ============================================================
-class SendSpy:
-    def __init__(self):
-        self.calls = []
-
-    def __call__(self, recipient_psid, text):
-        self.calls.append((recipient_psid, text))
-        return True
-
-
-class PauseStateSpy:
-    """
-    Stands in for api.pause_state. Records reads as well as writes — the
-    requirement is 'no pause_state reads or writes', and asserting only on
-    stored state would let a stray is_paused() call through.
-    """
-
-    def __init__(self):
-        self.pause_calls = []
-        self.is_paused_calls = []
-
-    def pause_thread(self, customer_id, reason="rep_reply"):
-        self.pause_calls.append((customer_id, reason))
-
-    def is_paused(self, customer_id):
-        self.is_paused_calls.append(customer_id)
-        return False
-
-    @property
-    def touched(self):
-        return bool(self.pause_calls or self.is_paused_calls)
-
-
-class GeneratorSpy:
-    def __init__(self):
-        self.calls = []
-
-    def generate(self, text):
-        self.calls.append(text)
-        return "স্টাব উত্তর"
-
-
-# ============================================================
-# Fixtures
+# Fixtures  (spies live in tests/conftest.py)
 # ============================================================
 @pytest.fixture
 def spies(monkeypatch):

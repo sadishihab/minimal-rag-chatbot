@@ -4,9 +4,10 @@ Verify api/message_classifier.py handles all the emoji and sticker edge cases.
 Run from project root:
     PYTHONPATH=. python tests/test_message_classifier.py
 
-The prefix is required: there is no conftest.py or pyproject.toml, so
-nothing puts the repo root on sys.path when this file is run directly and
-the import below fails with ModuleNotFoundError. Running it under pytest
+The prefix is required: nothing puts the repo root on sys.path when this
+file is run directly, so the import below fails with ModuleNotFoundError.
+tests/conftest.py does not help — conftest is a pytest mechanism and is not
+read at all by a plain `python tests/...` run. Running it under pytest
 hides that (pytest inserts its rootdir) but collects zero tests, because
 the checks live under __main__ — so pytest reports success having run
 nothing.
