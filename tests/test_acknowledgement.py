@@ -7,23 +7,26 @@ that file's checks live under `if __name__ == "__main__"`, so pytest collects
 zero tests from it and reports success (known issue 1 in CLAUDE.md). A guard
 that only runs when someone remembers to invoke a script by hand is not a guard.
 
-WHAT WOULD MAKE THIS SUITE GO RED — the four mutations it exists to catch,
-each verified by actually breaking the implementation and watching it fail
-rather than by reasoning that it should:
+WHAT WOULD MAKE THIS SUITE GO RED — the mutations it exists to catch, each
+verified by actually breaking the implementation and watching it fail rather
+than by reasoning that it should. Counts are whole-repo `pytest tests/`:
 
-  1. `return True`   → 50 failures, from test_not_an_acknowledgement.
-  2. `return False`  → 47 failures, from test_every_literal_matches.
-  3. prefix matching (`normalised.startswith(a)`)  → 24 failures.
-  4. substring matching (`a in normalised`)        → 26 failures.
+  1. `return True`   → 54 failures, from test_not_an_acknowledgement.
+  2. `return False`  → 60 failures, from test_every_literal_matches.
+  3. prefix matching (`normalised.startswith(a)`)   → 26 failures.
+  4. substring matching (`a in normalised`)         → 30 failures.
+  5. stripping emoji ANYWHERE rather than trailing  →  2 failures, from
+     test_only_a_trailing_emoji_run_is_noise.
 
 (3) and (4) are the ones that matter, and they fail on
-test_a_list_item_followed_by_more_text_does_not_match. Whole-message matching
-is the rule that makes the branch safe to run in front of the pipeline, so it
-gets a dedicated block rather than a couple of incidental cases.
+test_a_list_item_followed_by_more_text_does_not_match — "ok koto lagbe?" by
+name. Whole-message matching is the rule that makes the branch safe to run in
+front of the pipeline, so it gets a dedicated block rather than a couple of
+incidental cases. (5) guards the one relaxation of that rule.
 
 Deleting the routing branch in api/messenger.py while leaving this predicate
-intact is a fifth mutation, and it is invisible here by construction — the two
-tests that catch it live in tests/test_messenger_gate.py.
+intact is a sixth mutation (3 failures), and it is invisible here by
+construction — the tests that catch it live in tests/test_messenger_gate.py.
 """
 import pytest
 
@@ -227,18 +230,73 @@ def test_no_literal_is_also_emoji_only(literal):
     assert is_emoji_only(literal) is False
 
 
-@pytest.mark.parametrize("text", ["👍", "❤️", "😊 😊", "🇧🇩"])
-def test_emoji_is_not_an_acknowledgement(text):
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ok 👍",
+        "thanks 👍👍",
+        "ঠিক আছে 🙏",
+        "thanks 😊",
+        "ধন্যবাদ 🙏🙏🙏",
+        "okay😊",              # no space before the emoji
+        "ok 👍.",              # emoji then punctuation
+        "ok. 👍",              # punctuation then emoji — the loop interleaves
+    ],
+)
+def test_a_trailing_emoji_run_is_stripped(text):
+    """A trailing 👍 on an acknowledgement is close to universal on Messenger."""
+    assert is_acknowledgement(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ok 👍🏽",              # skin tone modifier
+        "ok 🇧🇩",              # regional indicators (flag)
+        "ok 👨\u200d👩\u200d👧\u200d👦",  # ZWJ family sequence
+        "thanks ❤️",           # variation selector
+    ],
+)
+def test_the_emoji_predicate_is_reused_not_reinvented(text):
+    """
+    Skin tones, regional indicators, ZWJ sequences and variation selectors are
+    all things _is_emoji_char knows about and a naive category=="So" check does
+    not. They work here only because the strip reuses that predicate — which is
+    what stops the two branches disagreeing about what an emoji is.
+    """
+    assert is_acknowledgement(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "👍 ok",               # leading, not trailing
+        "😊 thanks",
+        "ok 👍 koto lagbe?",   # mid-message, and still a question
+        "ঠিক আছে 👍 কিন্তু দাম কত",
+        "ok bhai",             # a trailing WORD is not noise
+        "thanks bhai",
+        "ok 👍 bhai",          # emoji stripped, the word still disqualifies it
+    ],
+)
+def test_only_a_trailing_emoji_run_is_noise(text):
+    """
+    THE LINE: emoji are punctuation-like, words are not. Stripping is trailing
+    only, and it relaxes nothing else — after the strip, what remains still has
+    to be an exact whole-message match.
+
+    Pinned rather than remembered, because "ok bhai" and "ok 👍" look like the
+    same shape and are not.
+    """
     assert is_acknowledgement(text) is False
 
 
-@pytest.mark.parametrize("text", ["ok 👍", "thanks 😊", "ঠিক আছে 👍"])
-def test_a_trailing_emoji_falls_through_for_now(text):
+@pytest.mark.parametrize("text", ["👍", "🙏🙏", "❤️", "😊 😊"])
+def test_emoji_alone_is_not_an_acknowledgement(text):
     """
-    Pins a KNOWN GAP, not a desired behaviour. Stripping a trailing emoji run
-    before matching was considered and deferred — it widens the feature past
-    the agreed list. If that decision is revisited, this test is the one to
-    flip, and it is here so the gap is visible rather than discovered in a
-    transcript.
+    Stripping leaves nothing, and nothing is not on the list. So the emoji-only
+    branch wins on ordering AND this predicate declines independently — two
+    reasons, either sufficient. test_inside_window_emoji_takes_the_emoji_branch
+    in tests/test_messenger_gate.py pins which branch actually runs.
     """
     assert is_acknowledgement(text) is False

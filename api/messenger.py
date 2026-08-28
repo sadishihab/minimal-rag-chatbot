@@ -307,6 +307,8 @@ def process_messaging_event(event: dict, generator) -> None:
     # is_acknowledgement matches the WHOLE message only, so "ok koto lagbe?"
     # and "ok 01775760496" both fall through to the pipeline, which is what
     # keeps a question (or a shared number) from being answered with "ধন্যবাদ".
+    # It does strip a trailing run of emoji first ("ok 👍"), so it must stay
+    # BELOW the emoji-only branch — a bare "👍" belongs to that one.
     if is_acknowledgement(text):
         log.info(
             f"Customer {sender_id[:10]}... sent acknowledgement {text!r} "

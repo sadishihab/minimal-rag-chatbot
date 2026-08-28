@@ -10,6 +10,7 @@ generator, so they need no FAISS index, no OPENAI_API_KEY, and no network.
 """
 import hashlib
 import hmac
+import logging
 
 import pytest
 from fastapi import FastAPI
@@ -229,6 +230,45 @@ def test_inside_window_acknowledgement_thanks_without_pausing(client, spies, mon
 
     assert send.calls == [(CUSTOMER, messenger.THANKS_MESSAGE)]
     assert generator.calls == [], "an acknowledgement must never reach FAISS"
+    assert pause.pause_calls == []
+
+
+def test_inside_window_emoji_takes_the_emoji_branch_not_the_acknowledgement_one(
+    client, spies, monkeypatch, caplog
+):
+    """
+    Both branches send THANKS_MESSAGE, so the reply cannot tell them apart —
+    the log line is the only observable difference, and it is what a future
+    reader greps for when asking why a message was answered the way it was.
+
+    Emoji-only sits above the acknowledgement branch and wins. That is belt and
+    braces: is_acknowledgement("👍") is independently False, because stripping
+    the trailing emoji run leaves nothing.
+    """
+    send, pause, generator = spies
+    monkeypatch.setattr(messenger, "bot_is_active", lambda: True)
+
+    with caplog.at_level(logging.INFO):
+        post_event(client, {**TEXT_EVENT, "message": {"mid": "m9", "text": "👍"}})
+
+    assert send.calls == [(CUSTOMER, messenger.THANKS_MESSAGE)]
+    assert "emoji-only text" in caplog.text
+    assert "acknowledgement" not in caplog.text
+    assert generator.calls == []
+    assert pause.pause_calls == []
+
+
+def test_inside_window_acknowledgement_with_a_trailing_emoji_thanks(
+    client, spies, monkeypatch
+):
+    """"ok 👍" is the shape this branch was widened to cover."""
+    send, pause, generator = spies
+    monkeypatch.setattr(messenger, "bot_is_active", lambda: True)
+
+    post_event(client, {**TEXT_EVENT, "message": {"mid": "m10", "text": "ok 👍"}})
+
+    assert send.calls == [(CUSTOMER, messenger.THANKS_MESSAGE)]
+    assert generator.calls == []
     assert pause.pause_calls == []
 
 

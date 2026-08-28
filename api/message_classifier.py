@@ -127,6 +127,13 @@ def is_emoji_only(text: str) -> bool:
 # pipeline. That single rule is what makes the branch safe: normalisation can
 # only ever collapse a message onto a member of the closed list below, never
 # widen the list itself.
+#
+# The one thing normalisation removes beyond case, whitespace and punctuation
+# is a TRAILING run of emoji — "ok 👍" is an acknowledgement, and a trailing
+# thumbs-up is close to universal on Messenger. Emoji are treated as
+# punctuation-like; words are not. "ok bhai" keeps its "bhai" and falls
+# through, and so does "👍 ok" (leading) and "ok 👍 koto lagbe?" (mid-message).
+# After stripping, what remains still has to be an exact whole-message match.
 
 # The list is exact and closed. Additions are a maintainer decision — "hmm" /
 # "হুম" and "ji" / "জি" were considered and deliberately excluded as ambiguous.
@@ -166,6 +173,32 @@ _ZERO_WIDTH_CODEPOINTS = dict.fromkeys(
 _TRAILING_PUNCTUATION = ".!।॥, \t\n"
 
 
+def _strip_trailing_noise(text: str) -> str:
+    """
+    Remove a trailing run of punctuation, whitespace, and emoji.
+
+    TRAILING ONLY, and nothing else is removed. A word is not noise: "ok bhai"
+    keeps its "bhai" and therefore does not match. That is the line — emoji are
+    punctuation-like, words are not — and it is pinned by
+    test_only_a_trailing_emoji_run_is_noise.
+
+    Emoji are recognised with _is_emoji_char, the same predicate is_emoji_only
+    uses, rather than a second definition. That is what makes flags, skin-tone
+    modifiers and ZWJ sequences work here for free, and what keeps the two
+    branches from disagreeing about what an emoji is.
+
+    Punctuation and emoji are stripped in a loop rather than one after the
+    other so they can interleave: "ok 👍." and "ok. 👍" both reduce to "ok".
+    """
+    previous = None
+    while text != previous:
+        previous = text
+        text = text.rstrip(_TRAILING_PUNCTUATION)
+        while text and _is_emoji_char(text[-1]):
+            text = text[:-1]
+    return text
+
+
 def _normalise(text: str) -> str:
     """
     Reduce a message to its comparison form.
@@ -178,7 +211,7 @@ def _normalise(text: str) -> str:
     normalised = unicodedata.normalize("NFC", text)
     normalised = normalised.translate(_ZERO_WIDTH_CODEPOINTS)
     normalised = " ".join(normalised.split())          # collapse internal runs
-    normalised = normalised.rstrip(_TRAILING_PUNCTUATION)
+    normalised = _strip_trailing_noise(normalised)
     return normalised.casefold()
 
 
@@ -194,20 +227,27 @@ def is_acknowledgement(text: str) -> bool:
     Return True if the WHOLE message is one of the known acknowledgements.
 
     Case, surrounding whitespace, internal whitespace runs, trailing
-    '. ! । ॥ ,', Unicode composition, and zero-width characters are all
-    normalised away first. A question mark is not.
+    '. ! । ॥ ,', a trailing run of emoji, Unicode composition, and zero-width
+    characters are all normalised away first. A question mark is not.
 
     Examples:
-      "Ok"              → True
-      "ok."             → True  (collapses onto "ok")
-      " THANKS "        → True
-      "thank  you"      → True
-      "ঠিক আছে।"        → True
-      "ok koto lagbe?"  → False (a question that starts with an ack)
-      "thanks a lot"    → False (not a whole-message match)
-      "ok?"             → False ('?' is not stripped)
-      "okk"             → False
-      ""                → False
+      "Ok"                  → True
+      "ok."                 → True  (collapses onto "ok")
+      " THANKS "            → True
+      "thank  you"          → True
+      "ঠিক আছে।"            → True
+      "ok 👍"               → True  (trailing emoji stripped)
+      "thanks 👍👍"          → True
+      "ok koto lagbe?"      → False (a question that starts with an ack)
+      "thanks a lot"        → False (not a whole-message match)
+      "ok bhai"             → False (a trailing WORD is not noise)
+      "👍 ok"               → False (leading emoji, not trailing)
+      "ok 👍 koto lagbe?"   → False (mid-message emoji, still a question)
+      "👍"                  → False (nothing left after stripping; this is
+                                     the emoji-only branch's message anyway)
+      "ok?"                 → False ('?' is not stripped)
+      "okk"                 → False
+      ""                    → False
     """
     if not text:
         return False
