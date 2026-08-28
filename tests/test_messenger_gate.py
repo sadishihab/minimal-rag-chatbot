@@ -213,6 +213,74 @@ def test_inside_window_sticker_thanks_without_pausing(client, spies, monkeypatch
     assert generator.calls == []
 
 
+def test_inside_window_acknowledgement_thanks_without_pausing(client, spies, monkeypatch):
+    """
+    "Ok" is the customer closing the conversation. Before this branch it went
+    to the pipeline and came back with an answer that restarted it.
+
+    The generator assertion is the point of the test, not the reply: it is what
+    proves retrieval was never reached, and it is what fails if the branch is
+    ever moved below the pipeline call.
+    """
+    send, pause, generator = spies
+    monkeypatch.setattr(messenger, "bot_is_active", lambda: True)
+
+    post_event(client, {**TEXT_EVENT, "message": {"mid": "m6", "text": "Ok"}})
+
+    assert send.calls == [(CUSTOMER, messenger.THANKS_MESSAGE)]
+    assert generator.calls == [], "an acknowledgement must never reach FAISS"
+    assert pause.pause_calls == []
+
+
+def test_inside_window_acknowledgement_prefixing_a_question_reaches_the_generator(
+    client, spies, monkeypatch
+):
+    """
+    Whole-message matching, at the routing level rather than the predicate
+    level. "ok koto lagbe?" starts with "ok" and is a real question.
+    """
+    send, pause, generator = spies
+    monkeypatch.setattr(messenger, "bot_is_active", lambda: True)
+
+    post_event(
+        client, {**TEXT_EVENT, "message": {"mid": "m7", "text": "ok koto lagbe?"}}
+    )
+
+    assert generator.calls == ["ok koto lagbe?"]
+    assert send.calls == [(CUSTOMER, "স্টাব উত্তর")]
+    assert pause.pause_calls == []
+
+
+def test_inside_window_attachment_outranks_an_acknowledgement_caption(
+    client, spies, monkeypatch
+):
+    """
+    A photo captioned "ok" still needs human review. Every branch above the
+    acknowledgement one outranks it; this pins the one that is easiest to
+    break by moving the new branch a few lines up.
+    """
+    send, pause, generator = spies
+    monkeypatch.setattr(messenger, "bot_is_active", lambda: True)
+
+    post_event(
+        client,
+        {
+            **ATTACHMENT_EVENT,
+            "message": {
+                "mid": "m8",
+                "text": "ok",
+                "attachments": [
+                    {"type": "image", "payload": {"url": "https://example.com/a.jpg"}}
+                ],
+            },
+        },
+    )
+
+    assert send.calls == [(CUSTOMER, messenger.HANDOFF_MESSAGE)]
+    assert pause.pause_calls == [(CUSTOMER, "attachment")]
+    assert generator.calls == []
+
+
 def test_inside_window_rep_echo_pauses_the_thread(client, spies, monkeypatch):
     send, pause, generator = spies
     monkeypatch.setattr(messenger, "bot_is_active", lambda: True)

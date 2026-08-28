@@ -261,6 +261,57 @@ def test_thanks_message_passes_through_unchanged(client, send):
     assert send.last_text == messenger.THANKS_MESSAGE
 
 
+# ============================================================
+# The acknowledgement branch, against the real state modules
+# ============================================================
+def test_acknowledgement_into_a_paused_thread_stays_silent(client, send):
+    """
+    The pause outranks the acknowledgement branch, which is unreachable while
+    a rep owns the thread. Asserted here rather than reasoned about, because
+    "unreachable" is exactly what a future re-ordering breaks silently.
+    """
+    pause_state.pause_thread(CUSTOMER, reason="rep_reply")
+    post_event(client, text_event("ok"))
+
+    assert send.calls == []
+
+
+def test_acknowledgement_alongside_a_number_falls_through_to_the_pipeline(
+    make_client, send
+):
+    """
+    "ok 01775760496" is not a whole-message match, so it must reach the
+    pipeline, where generate()'s own phone bypass answers it. Replying
+    "ধন্যবাদ" here would drop a shared number on the floor.
+
+    Asserted on the generator call rather than on PHONE_ACKNOWLEDGMENT: the
+    bypass lives in generate(), and this suite runs a stub in its place, so
+    asserting the canned reply here would only be testing the double.
+    """
+    generator = GeneratorSpy()
+    client = make_client(generator)
+
+    post_event(client, text_event("ok 01775760496"))
+
+    assert generator.calls == ["ok 01775760496"]
+    assert phone_shared_state.has_shared_phone(CUSTOMER)
+    assert send.last_text != messenger.THANKS_MESSAGE
+
+
+def test_acknowledgement_after_sharing_a_number_is_sent_unchanged(client, send, caplog):
+    """
+    THANKS_MESSAGE carries no CTA, so the send-boundary wrapper is a no-op on
+    it — including for a flagged customer, and including when the customer's
+    own message was the word the bot is about to reply with.
+    """
+    post_event(client, text_event(NUMBER_TEXT))
+    with caplog.at_level(logging.WARNING):
+        post_event(client, text_event("ধন্যবাদ"))
+
+    assert send.last_text == messenger.THANKS_MESSAGE
+    assert "CTA drift" not in caplog.text
+
+
 def test_drift_warning_reaches_the_log_through_the_real_send_path(make_client, send, caplog):
     """
     Wires the instrument end to end. A model paraphrase reaches the customer

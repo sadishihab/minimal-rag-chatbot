@@ -27,7 +27,11 @@ from api.send_api import send_text_message
 from api import pause_state
 from api import phone_shared_state
 from api.cta_substitution import substitute_cta, check_for_drift
-from api.message_classifier import is_emoji_only, is_all_stickers
+from api.message_classifier import (
+    is_emoji_only,
+    is_acknowledgement,
+    is_all_stickers,
+)
 
 # Two imports from generation/ that are NOT reply generation: a pure regex
 # predicate and the constant it maps to. Detection has to happen here because
@@ -60,7 +64,8 @@ HANDOFF_MESSAGE_PHONE_SHARED = (
     "আমরা রিভিউ করে এ বিষয়ে আপনাকে বিস্তারিত জানাচ্ছি।"
 )
 
-# Acknowledgment for emoji-only text and sticker-only attachments.
+# Acknowledgment for emoji-only text, acknowledgement text ("ok", "thanks",
+# "আচ্ছা"), and sticker-only attachments.
 # Customer expressed engagement without asking a question — short, polite,
 # no pause (so the bot stays active for any follow-up question).
 THANKS_MESSAGE = "ধন্যবাদ"
@@ -289,6 +294,24 @@ def process_messaging_event(event: dict, generator) -> None:
     # Acknowledge politely without burning OpenAI tokens or calling the rep.
     if is_emoji_only(text):
         log.info(f"Customer {sender_id[:10]}... sent emoji-only text → thanks (no pause)")
+        send_reply(sender_id, THANKS_MESSAGE)
+        return
+
+    # ACKNOWLEDGEMENT TEXT
+    # "ok" / "thanks" / "আচ্ছা" — the customer is closing the conversation, not
+    # asking anything. Same treatment as emoji-only: acknowledge, no pause, no
+    # retrieval. Sits here, as the last branch before the pipeline, because
+    # every branch above it outranks a polite ack — a rep owns a paused thread,
+    # an attachment or a URL needs human review whatever the caption says.
+    #
+    # is_acknowledgement matches the WHOLE message only, so "ok koto lagbe?"
+    # and "ok 01775760496" both fall through to the pipeline, which is what
+    # keeps a question (or a shared number) from being answered with "ধন্যবাদ".
+    if is_acknowledgement(text):
+        log.info(
+            f"Customer {sender_id[:10]}... sent acknowledgement {text!r} "
+            f"→ thanks (no pause)"
+        )
         send_reply(sender_id, THANKS_MESSAGE)
         return
 

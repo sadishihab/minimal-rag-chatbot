@@ -3,10 +3,11 @@ Message classifier — detect special message shapes that need custom handling.
 
 Currently used to distinguish:
   - Emoji-only text   → reply "ধন্যবাদ" (no pause)
+  - Acknowledgement text ("ok", "thanks", "আচ্ছা") → reply "ধন্যবাদ" (no pause)
   - Sticker-only attachments → reply "ধন্যবাদ" (no pause)
   - Anything else → handled by existing routing in messenger.py
 
-Both cases are conceptually "customer expressed positive engagement without
+All three are conceptually "customer expressed positive engagement without
 asking a question," so we acknowledge but don't trigger expensive RAG flow
 or rep handover.
 """
@@ -105,6 +106,112 @@ def is_emoji_only(text: str) -> bool:
         if not _is_emoji_char(ch):
             return False
     return True
+
+
+# ============================================================
+# Acknowledgement detection
+# ============================================================
+# "ok" / "thanks" / "আচ্ছা" is a customer closing the conversation, not asking
+# anything. Before this branch existed those messages went through the full
+# pipeline, retrieved whatever happened to sit nearest in embedding space, and
+# came back with a reply that restarted a conversation the customer had just
+# ended — for a phone-shared customer, the substituted CTA
+# ("এ বিষয়ে আমাদের একজন প্রতিনিধি আপনাকে কল করে বিস্তারিত জানাবেন।").
+#
+# Same shape as is_emoji_only above: acknowledge with THANKS_MESSAGE, no pause,
+# never reach FAISS. Free, instant, and immune to retrieval landing somewhere
+# strange.
+#
+# WHOLE-MESSAGE MATCH ONLY — never a prefix, never a substring. "ok koto
+# lagbe?" starts with "ok" and IS a question, so it must fall through to the
+# pipeline. That single rule is what makes the branch safe: normalisation can
+# only ever collapse a message onto a member of the closed list below, never
+# widen the list itself.
+
+# The list is exact and closed. Additions are a maintainer decision — "hmm" /
+# "হুম" and "ji" / "জি" were considered and deliberately excluded as ambiguous.
+_ACKNOWLEDGEMENT_LITERALS = (
+    # English
+    "ok",
+    "okay",
+    "ok.",
+    "thanks",
+    "thank you",
+    "tnx",
+    "thnx",
+    # Bangla
+    "ওকে",
+    "আচ্ছা",
+    "ঠিক আছে",
+    "ধন্যবাদ",
+    # Banglish
+    "accha",
+    "thik ache",
+    "dhonnobad",
+)
+
+# Invisible characters that Bangla keyboards emit and no log line shows.
+# Without stripping them a non-match is unexplainable from the transcript.
+_ZERO_WIDTH_CODEPOINTS = dict.fromkeys(
+    (
+        0x200B,  # ZWSP
+        0x200C,  # ZWNJ — typed to break Bangla conjuncts
+        0x200D,  # ZWJ
+        0xFEFF,  # BOM / zero-width no-break space
+    )
+)
+
+# '?' is deliberately NOT here: "ok?" reads as a question ("is that ok?") and
+# must reach the pipeline. Leading punctuation is likewise left alone.
+_TRAILING_PUNCTUATION = ".!।॥, \t\n"
+
+
+def _normalise(text: str) -> str:
+    """
+    Reduce a message to its comparison form.
+
+    Applied to BOTH sides — the incoming text and _ACKNOWLEDGEMENT_LITERALS at
+    import — so the two can never drift apart. This is also what makes "ok."
+    collapse onto "ok": the literal is kept in the list above as a verbatim
+    record of the decision, and lands on the same set member.
+    """
+    normalised = unicodedata.normalize("NFC", text)
+    normalised = normalised.translate(_ZERO_WIDTH_CODEPOINTS)
+    normalised = " ".join(normalised.split())          # collapse internal runs
+    normalised = normalised.rstrip(_TRAILING_PUNCTUATION)
+    return normalised.casefold()
+
+
+# 14 literals, 13 unique members — "ok." collapses onto "ok".
+# tests/test_acknowledgement.py pins both the count and the membership.
+_ACKNOWLEDGEMENTS = frozenset(
+    _normalise(literal) for literal in _ACKNOWLEDGEMENT_LITERALS
+)
+
+
+def is_acknowledgement(text: str) -> bool:
+    """
+    Return True if the WHOLE message is one of the known acknowledgements.
+
+    Case, surrounding whitespace, internal whitespace runs, trailing
+    '. ! । ॥ ,', Unicode composition, and zero-width characters are all
+    normalised away first. A question mark is not.
+
+    Examples:
+      "Ok"              → True
+      "ok."             → True  (collapses onto "ok")
+      " THANKS "        → True
+      "thank  you"      → True
+      "ঠিক আছে।"        → True
+      "ok koto lagbe?"  → False (a question that starts with an ack)
+      "thanks a lot"    → False (not a whole-message match)
+      "ok?"             → False ('?' is not stripped)
+      "okk"             → False
+      ""                → False
+    """
+    if not text:
+        return False
+    return _normalise(text) in _ACKNOWLEDGEMENTS
 
 
 # ============================================================
