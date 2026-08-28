@@ -69,6 +69,14 @@ This bot solves that by:
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
+│   Send boundary  (api/messenger.py → send_reply)                     │
+│   • customer already shared a number? replace the                    │
+│     "share your mobile number" CTA (api/cta_substitution.py)         │
+│   • WARNING if it survives — the model reworded the KB text          │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────┐
 │   Send reply via Messenger Send API  (api/send_api.py)               │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -114,6 +122,12 @@ This bot solves that by:
 
 The weekday is evaluated in Asia/Dhaka, like the hours, and for the same reason: the container clock runs UTC, and a weekday read there would start the bot at 06:00 Friday and stop it at 06:00 Saturday — wrong at both ends. An unknown day name stops the app at boot rather than being read as "no always-active days", which would be indistinguishable from the feature being switched off.
 
+**Why suppress the phone-number CTA after a customer shares one?** Most knowledge-base answers close by asking the customer to share their mobile number so a rep can call — the single most valuable action the bot can prompt. Once the customer has actually done it, that same closing line reads as the bot having lost the conversation, and it repeats on every subsequent reply. So the ask is stripped on the way out, at the Messenger send boundary rather than inside the generator: `generate()` takes a bare string and has no PSID, and keeping it identity-free is worth more than the convenience. That placement is also the only one that covers the paths which never call the generator at all — the attachment handoff and the crash fallback.
+
+It is a replacement, never a truncation. The ask sits mid-answer in most entries, with URLs after it in 45 of them, so cutting from the CTA onward would silently drop links. Matching is on exact strings and ordered longest-first, because the short variant is a substring of the long one. `site_visit` answers get their own replacement — the generic one would drop the promise to schedule the visit, which is a content regression rather than a wording change.
+
+The weak point is that the reply is model output, not raw KB text, so exact matching only works as far as the model reproduces the knowledge base verbatim. A `WARNING` fires whenever a reply to a customer who has shared a number still mentions মোবাইল নম্বর, with the reply text attached. That log line is the instrument measuring the bet, and `grep 'CTA drift'` is how you find out whether exact matching is enough.
+
 **Why a human-takeover pause system?** The bot is a first-responder, not a replacement. When a human rep replies via Page Inbox, the bot detects the echo event, identifies it as a rep reply (by `app_id` mismatch), and pauses itself for 7 days on a sliding window. Attachments, URLs, and phone numbers also trigger handoff. The bot stays completely silent while paused — the rep owns the thread.
 
 ---
@@ -143,12 +157,17 @@ minimal_rag/
 │   ├── send_api.py
 │   ├── message_classifier.py
 │   ├── active_hours.py
-│   ├── pause_state.py
+│   ├── pause_state.py            # rep-takeover flag (PSID → timestamp)
+│   ├── phone_shared_state.py     # phone-shared flag (same shape)
+│   ├── cta_substitution.py       # strips the "share your number" ask
 │   └── request_context.py
 ├── tests/                        # pytest suites + eval tools
 │   ├── test_loader.py
 │   ├── test_active_hours.py
 │   ├── test_messenger_gate.py
+│   ├── test_phone_shared_flow.py
+│   ├── test_cta_substitution.py
+│   ├── audit_cta_variants.py     # KB hygiene: CTA wordings still match
 │   ├── test_api.py
 │   ├── test_message_classifier.py
 │   ├── chat_cli.py               # interactive CLI for exploratory testing
@@ -322,6 +341,7 @@ Categories cover: greetings, pricing (general + room-specific), packages, materi
 - [x] HMAC-SHA256 webhook signature verification
 - [x] Human-takeover pause state (7-day sliding window)
 - [x] Message classifier (emoji, sticker, attachment, URL, phone)
+- [x] Phone-shared CTA suppression at the Messenger send boundary
 - [x] Echo detection for rep-reply via Page Inbox
 - [x] Configurable active-hours window (Asia/Dhaka, wraps midnight)
 - [x] Always-active weekdays (`BOT_ALWAYS_ACTIVE_DAYS`) for the Friday holiday
@@ -330,7 +350,8 @@ Categories cover: greetings, pricing (general + room-specific), packages, materi
 - [x] Docker multi-stage build, non-root user
 - [x] Production deployment on DigitalOcean behind nginx + TLS
 - [ ] `POST /admin/unpause` endpoint for per-PSID selective unpause
-- [ ] SQLite persistence for pause state (survives container restarts)
+- [ ] SQLite persistence for pause state **and phone-shared state**
+      (both die on restart; two consumers now, not one)
 - [ ] Facebook App Review — move out of Development Mode
 - [ ] GitHub Actions CI/CD (auto build + push to GHCR on merge to main)
 - [ ] Conversation memory (multi-turn context)

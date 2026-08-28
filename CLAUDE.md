@@ -55,6 +55,14 @@ Request flow (Messenger path — `api/messenger.py` → `generation/generator.py
    - any other attachment, or text containing a URL → handoff message + pause (needs human review)
    - emoji-only text → "ধন্যবাদ" only, no pause, no RAG call
    - otherwise → falls through to `generator.generate(text)`
+
+   Above all of those branches (and below the echo branch), any inbound text
+   containing a phone number sets `phone_shared_state.mark_phone_shared()`.
+   It has to sit there because a number can arrive on any branch — with a URL,
+   as an image caption, or into a paused thread — and only the last branch
+   reaches the generator's own detector. Do not move it below the pause check:
+   a number given while a rep owns the thread still has to be remembered,
+   because the pause expires and the bot comes back.
 2. **`generation/generator.py`** (`Generator` class) — the actual RAG pipeline, also reachable directly via `POST /chat`:
    - sanitize input (`generation/sanitizer.py`)
    - phone-number bypass (`generation/phone_detector.py`) — if the customer shares a number, skip retrieval/LLM entirely and send a canned acknowledgment
@@ -62,7 +70,15 @@ Request flow (Messenger path — `api/messenger.py` → `generation/generator.py
    - build prompt (`generation/prompt_builder.py`) with strict formal-Bangla output rules
    - call `gpt-4o-mini`, with per-exception-type OpenAI error handling, each mapped to a specific Bangla fallback message (rate limit / connection / auth / bad request / generic) — `Generator.generate()` is designed to never raise, always return a user-facing string
    - post-process: `generation/formatter.py` strips markdown that leaked through
-3. **`api/send_api.py`** sends the reply back via the Messenger Send API.
+3. **`api/messenger.py:send_reply()`** is the send boundary, and every send in
+   `process_messaging_event` goes through it — not just the RAG reply. If that
+   customer has already shared a phone number, it swaps `HANDOFF_MESSAGE` for
+   `HANDOFF_MESSAGE_PHONE_SHARED` and runs `cta_substitution.substitute_cta()`
+   over the text, then `check_for_drift()`. **This is the only point in the
+   process that holds both a reply and a PSID**, which is why it lives here
+   rather than in `Generator.generate()` — `generate()` takes a bare string and
+   stays identity-free by design. Do not thread a PSID into it.
+4. **`api/send_api.py`** sends the reply back via the Messenger Send API.
 
 Ingestion is a separate, one-time-per-KB-change pipeline (`ingestion/loader.py` → `ingestion/embedder.py` → `ingestion/indexer.py`), run manually via `python -m ingestion.indexer`. It is not invoked at request time — `Retriever` just loads the pre-built `vector_store/faiss.index` + `vector_store/metadata.json` at startup and reuses them for every query. The Docker `entrypoint.sh` builds the index automatically on container start if it's missing.
 
@@ -71,6 +87,35 @@ Ingestion is a separate, one-time-per-KB-change pipeline (`ingestion/loader.py` 
 **Pause state** (`api/pause_state.py`) is an in-memory process-local dict — lost on restart by design for now (self-healing: rep's next reply re-pauses). Do not add persistence without checking the README roadmap; SQLite-backed persistence is a known open item.
 
 **The justification for that has weakened, and the doc used to overstate it.** It read "the bot effectively starts fresh each night, so a 7-day pause never needs to survive a restart" — true of a 10-hour window, false since `BOT_ALWAYS_ACTIVE_DAYS=friday`. The bot now runs Thu 23:00 → Sat 09:00 as one 34-hour stretch, so a pause set by a rep on Thursday night has to survive far longer, and the self-healing story depends on a rep replying again. **No rep works Friday** — that is the entire reason the day is covered — so a mid-stretch restart silently un-pauses a thread a rep had taken over, the bot resumes talking to that customer, and nobody notices until Saturday. Weigh that before restarting production mid-stretch, and treat SQLite persistence as closer to necessary than the roadmap entry implies.
+
+**Phone-number CTA substitution** (`api/cta_substitution.py` +
+`api/phone_shared_state.py`). Most KB answers close by asking the customer to
+share their mobile number. Once they have, that line reads as the bot having
+lost the conversation — and it repeats on every later reply. `send_reply()`
+strips it for flagged customers.
+
+Three things about it are load-bearing:
+
+- **Replacement, never truncation.** The ask sits mid-answer in 70 of its 78
+  full-form occurrences, with URLs after it in 45. Cutting from the CTA onward
+  destroys those links.
+- **Ordered longest-first.** `CTA_SHORT` is a *substring* of `CTA_FULL`.
+  Matching short first rewrites only the tail and strands the lead-in, giving a
+  doubled anaphor (`...বিস্তারিত তথ্যের জন্য এ বিষয়ে...`). `_SUBSTITUTIONS`
+  sorts by pattern length rather than being hand-ordered; the ordering is
+  pinned by `test_substring_ordering_does_not_corrupt_the_full_cta`.
+- **`site_visit` has its own replacement.** The generic one drops the promise
+  to schedule the visit — a content regression, not a wording change.
+
+The CTA constants are copied verbatim out of the gitignored KB. A hand-edit to
+any of the 93 answers that carry one silently drops it out of coverage, so
+`tests/audit_cta_variants.py` fails if the KB drifts away from the constants.
+It skips (does not fail) when the real KB is absent.
+
+`phone_shared_state` mirrors `pause_state` exactly — same shape, same
+in-memory-and-lost-on-restart tradeoff, no expiry. It is the **second**
+consumer of the missing persistence, which strengthens the SQLite case above
+rather than adding a new problem.
 
 **Config** (`config.py`) is the single source of truth for paths, model names (`gpt-4o-mini`, `text-embedding-3-small`), `TOP_K`, `SIMILARITY_THRESHOLD`, `BOT_ACTIVE_START_HOUR`/`BOT_ACTIVE_END_HOUR`/`BOT_ALWAYS_ACTIVE_DAYS`, and input/body-size limits — check here before hardcoding any of those values elsewhere.
 
@@ -261,6 +306,23 @@ delivery. This cost a full debugging cycle on the production page.
 Diagnosis: `sudo grep webhook /var/log/nginx/access.log | tail -20`. If it shows
 the verification GETs but no POSTs, the event never left Meta — which rules out
 tokens, signatures, and the active-hours gate, all of which produce log output.
+
+**The CTA substitution is invisible from `/chat` and the CLI — by design.**
+It runs in `send_reply()`, which only the Messenger path calls. `POST /chat`
+and `python -m tests.chat_cli` have no PSID, so they will always show the
+original "share your mobile number" closing no matter what state the flag is
+in. Anyone QA-ing this feature through the CLI will conclude it is broken.
+It has to be tested through Messenger, or through
+`tests/test_phone_shared_flow.py`.
+
+**`grep 'CTA drift'` is the health check for the substitution.**
+The reply is model output, not raw KB text, so exact-string matching only works
+as far as `gpt-4o-mini` reproduces the KB verbatim — and the prompt's own
+CLOSING RULES section calls that "the most-violated rule". Every WARNING is a
+case where the model reworded the CTA and a flagged customer got asked for
+their number anyway, with the reply text attached so the wording is
+recoverable. Quiet log ⇒ exact matching is sufficient. Noisy log ⇒ the fix is
+prompt tightening or fuzzy matching, not a wider regex guessed at in advance.
 
 **A paused thread makes every subsequent test look broken.**
 Once `pause_state` holds a PSID, everything from that customer returns silence in
