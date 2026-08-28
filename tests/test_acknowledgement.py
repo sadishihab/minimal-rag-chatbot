@@ -11,12 +11,14 @@ WHAT WOULD MAKE THIS SUITE GO RED — the mutations it exists to catch, each
 verified by actually breaking the implementation and watching it fail rather
 than by reasoning that it should. Counts are whole-repo `pytest tests/`:
 
-  1. `return True`   → 54 failures, from test_not_an_acknowledgement.
-  2. `return False`  → 60 failures, from test_every_literal_matches.
-  3. prefix matching (`normalised.startswith(a)`)   → 26 failures.
-  4. substring matching (`a in normalised`)         → 30 failures.
-  5. stripping emoji ANYWHERE rather than trailing  →  2 failures, from
-     test_only_a_trailing_emoji_run_is_noise.
+  1. `return True`   → 60 failures, from test_not_an_acknowledgement.
+  2. `return False`  → 67 failures, from test_every_literal_matches.
+  3. prefix matching (`normalised.startswith(a)`)  → 30 failures.
+  4. substring matching (`a in normalised`)        → 32 failures.
+  5. stripping emoji ANYWHERE, not just the edges  →  3 failures, from
+     test_emoji_in_the_middle_of_the_message_is_not_stripped.
+  6. stripping the trailing edge only, as before   →  7 failures, from
+     test_a_leading_emoji_run_is_stripped.
 
 (3) and (4) are the ones that matter, and they fail on
 test_a_list_item_followed_by_more_text_does_not_match — "ok koto lagbe?" by
@@ -24,8 +26,13 @@ name. Whole-message matching is the rule that makes the branch safe to run in
 front of the pipeline, so it gets a dedicated block rather than a couple of
 incidental cases. (5) guards the one relaxation of that rule.
 
+(5) is subtler than it looks and the obvious case does not test it:
+"ok 👍 koto lagbe?" reduces to "ok koto lagbe?" under anywhere-stripping, which
+is still not on the list, so it returns False under BOTH implementations. Only
+the mid-WORD cases ("o👍k") separate them, which is why they are in the suite.
+
 Deleting the routing branch in api/messenger.py while leaving this predicate
-intact is a sixth mutation (3 failures), and it is invisible here by
+intact is a seventh mutation (3 failures), and it is invisible here by
 construction — the tests that catch it live in tests/test_messenger_gate.py.
 """
 import pytest
@@ -251,6 +258,28 @@ def test_a_trailing_emoji_run_is_stripped(text):
 @pytest.mark.parametrize(
     "text",
     [
+        "👍 ok",
+        "🙏 ঠিক আছে",
+        "👍 ok 👍",            # both ends at once
+        "👍👍 thanks",
+        "😊 thanks",
+        "👍ok",                # no space after the emoji
+        "👍 ok.",              # leading emoji, trailing punctuation
+    ],
+)
+def test_a_leading_emoji_run_is_stripped(text):
+    """
+    "👍 ok" is as common as "ok 👍". Emoji carry no meaning that could turn an
+    acknowledgement into a question, so taking them off either end cannot
+    swallow anything — the remainder still has to be an exact whole-message
+    match.
+    """
+    assert is_acknowledgement(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "ok 👍🏽",              # skin tone modifier
         "ok 🇧🇩",              # regional indicators (flag)
         "ok 👨\u200d👩\u200d👧\u200d👦",  # ZWJ family sequence
@@ -270,23 +299,53 @@ def test_the_emoji_predicate_is_reused_not_reinvented(text):
 @pytest.mark.parametrize(
     "text",
     [
-        "👍 ok",               # leading, not trailing
-        "😊 thanks",
-        "ok 👍 koto lagbe?",   # mid-message, and still a question
-        "ঠিক আছে 👍 কিন্তু দাম কত",
-        "ok bhai",             # a trailing WORD is not noise
+        "ok bhai",             # a WORD is not noise
         "thanks bhai",
         "ok 👍 bhai",          # emoji stripped, the word still disqualifies it
+        "👍 ok bhai",
+        "ঠিক আছে apu",
+        "ok vai 👍",
     ],
 )
-def test_only_a_trailing_emoji_run_is_noise(text):
+def test_a_word_is_never_noise(text):
     """
-    THE LINE: emoji are punctuation-like, words are not. Stripping is trailing
-    only, and it relaxes nothing else — after the strip, what remains still has
-    to be an exact whole-message match.
+    THE LINE: emoji are punctuation-like, words are not.
+
+    "ok bhai" was raised twice and refused twice — deliberately, not
+    overlooked. Honorifics (bhai, apu, vai, bro, ji, sir) have no natural end
+    as a list, and each one added is a step away from whole-message matching,
+    which is the property that makes running this in front of the pipeline safe
+    at all. Emoji are exempt because they cannot change what a message asks; a
+    word can.
 
     Pinned rather than remembered, because "ok bhai" and "ok 👍" look like the
     same shape and are not.
+    """
+    assert is_acknowledgement(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ok 👍 koto lagbe?",   # mid-message, and still a question
+        "👍 ok koto lagbe?",   # leading emoji stripped, still a question
+        "ঠিক আছে 👍 কিন্তু দাম কত",
+        "o👍k",                # inside a word — not an edge
+        "th👍anks",
+        "ঠিক আ🙏ছে",
+        "thank 👍 you",        # between the two words of a literal
+    ],
+)
+def test_emoji_in_the_middle_of_the_message_is_not_stripped(text):
+    """
+    Both ends is NOT the same as everywhere, and this is the block that keeps
+    the two apart. A "strip emoji anywhere" implementation turns "o👍k" into a
+    match; the edge-only one leaves it alone.
+
+    Worth being precise about, because the obvious discriminator is not one:
+    "ok 👍 koto lagbe?" reduces to "ok koto lagbe?" under anywhere-stripping,
+    which is still not on the list, so it stays False either way. The mid-WORD
+    cases are what actually separate the two implementations.
     """
     assert is_acknowledgement(text) is False
 
