@@ -62,13 +62,19 @@ Request flow (Messenger path — `api/messenger.py` → `generation/generator.py
      "ok 01775760496" is a shared number, so both fall through. Adding a
      variant to the list is a maintainer decision, pinned by
      `test_the_literal_list_is_exactly_what_was_agreed`.
-     The single relaxation is a **trailing** run of emoji: "ok 👍" matches,
-     "👍 ok" and "ok 👍 koto lagbe?" do not, and neither does "ok bhai" — emoji
-     are treated as punctuation-like, a trailing word is not. Stripping reuses
-     `_is_emoji_char`, so this branch and the emoji-only one cannot disagree
-     about what an emoji is. It sits **below** emoji-only for that reason: a
-     bare "👍" belongs to that branch, and `is_acknowledgement` declines it
-     independently since stripping leaves nothing.
+     The single relaxation is a run of emoji at **either end**: "ok 👍" and
+     "👍 ok" match; "ok 👍 koto lagbe?" does not (mid-message is not an edge,
+     and the text is still a question), and neither does "ok bhai" — emoji are
+     treated as punctuation-like, a word never is. Honorifics were proposed
+     twice and refused twice: they have no natural end as a list. Stripping
+     reuses `_is_emoji_char`, so this branch and the emoji-only one cannot
+     disagree about what an emoji is. It sits **below** emoji-only for that
+     reason: a bare "👍" belongs to that branch, and `is_acknowledgement`
+     declines it independently since stripping leaves nothing.
+     Note when mutation-testing this: "strip emoji anywhere" is **not** caught
+     by "ok 👍 koto lagbe?" — that reduces to "ok koto lagbe?", still not on
+     the list, still False either way. Only mid-*word* cases ("o👍k") separate
+     edge-stripping from anywhere-stripping.
    - otherwise → falls through to `generator.generate(text)`
 
    Above all of those branches (and below the echo branch), any inbound text
