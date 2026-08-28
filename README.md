@@ -311,7 +311,7 @@ The DigitalOcean droplet runs the container behind nginx with TLS, exposed at `c
 
 ## Knowledge Base
 
-The production KB has **336 entries across 18+ intents** in three languages (Bangla, Banglish, English). Each intent typically has 3 entries — one per language — so FAISS hits regardless of how the customer types.
+The production KB has **339 entries across 18+ intents** in three languages (Bangla, Banglish, English). Each intent typically has 3 entries — one per language — so FAISS hits regardless of how the customer types.
 
 Sample intents: `pricing`, `main_packages`, `size_based_pricing`, `materials_brands`, `package_materials`, `interior_essence_package`, `location_coverage`, `process`, `specific_rooms_scope`, `site_visit`, `services_offered`, `contact`, `custom_furniture`, `payment_schedule`, `home_interior`, `office_interior`, `general_inquiry`.
 
@@ -335,7 +335,7 @@ Categories cover: greetings, pricing (general + room-specific), packages, materi
 ## Roadmap
 
 - [x] Knowledge base schema, loader, validation tests
-- [x] OpenAI embedding pipeline + FAISS index (336 vectors)
+- [x] OpenAI embedding pipeline + FAISS index (339 vectors)
 - [x] Retrieval with similarity threshold and graceful fallback
 - [x] Prompt engineering for strict formal-Bangla output
 - [x] FastAPI webhook + Facebook Messenger integration

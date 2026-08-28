@@ -123,7 +123,7 @@ rather than adding a new problem.
 
 ## Data
 
-- `data/knowledge_base.json` — the real KB, gitignored and proprietary (336 entries in production). Never commit real customer/business data here.
+- `data/knowledge_base.json` — the real KB, gitignored and proprietary (339 entries in production). Never commit real customer/business data here.
 - `data/knowledge_base.sample.json` — fictional 8-entry sample showing the schema (`data/README.md` documents required fields: `id`, `intent`, `sub_intent`, `language`, `question`, `answer`, `attachments`). Use this for any example/test KB content.
 - `vector_store/` (FAISS index + metadata) is gitignored and regenerated locally via the indexer — never hand-edit it.
 
