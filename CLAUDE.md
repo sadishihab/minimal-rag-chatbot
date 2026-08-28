@@ -396,8 +396,7 @@ unproven until you have watched it go red.
 - `tests/test_api.py` also errors at collection for `test_chat` and
   `test_validation_error` (`fixture 'label' not found`) — it is a script-style
   harness meant for `python -m tests.test_api` against a live server.
-- `THANKS_MESSAGE` is defined twice, identically, in `api/messenger.py`, and
-  `import re` sits mid-file rather than at the top.
+- `import re` sits mid-file in `api/messenger.py` rather than at the top.
 - Postbacks have no branch of their own in `process_messaging_event`; they fall
   through to the "no text and no attachments" handoff.
 - **Greeting coverage in the KB is thin.** "Hi" retrieves at `0.322` against a

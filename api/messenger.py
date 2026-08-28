@@ -65,11 +65,6 @@ HANDOFF_MESSAGE_PHONE_SHARED = (
 # no pause (so the bot stays active for any follow-up question).
 THANKS_MESSAGE = "ধন্যবাদ"
 
-# Acknowledgment for emoji-only text and sticker-only attachments.
-# Customer expressed engagement without asking a question — short, polite,
-# no pause (so the bot stays active for any follow-up question).
-THANKS_MESSAGE = "ধন্যবাদ"
-
 # URL detection: matches http://, https://, www., or anything with a domain pattern.
 # Used to trigger handoff for messages containing links.
 import re
