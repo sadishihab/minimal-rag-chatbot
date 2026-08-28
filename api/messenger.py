@@ -25,7 +25,15 @@ from config import (
 from api.active_hours import bot_is_active, describe_schedule
 from api.send_api import send_text_message
 from api import pause_state
+from api import phone_shared_state
+from api.cta_substitution import substitute_cta, check_for_drift
 from api.message_classifier import is_emoji_only, is_all_stickers
+
+# Two imports from generation/ that are NOT reply generation: a pure regex
+# predicate and the constant it maps to. Detection has to happen here because
+# this is the only layer that holds a PSID — Generator.generate() takes a
+# bare string and stays identity-free by design.
+from generation.phone_detector import contains_phone_number, PHONE_ACKNOWLEDGMENT
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +48,16 @@ HANDOFF_MESSAGE = (
     "আমরা রিভিউ করে এ বিষয়ে আপনাকে বিস্তারিত জানাচ্ছি। "
     "আর আপনার মোবাইল নম্বরটি শেয়ার করলে আমাদের একজন প্রতিনিধি "
     "আপনাকে কল করে বিস্তারিত তথ্য ও পরামর্শ দিতে পারবেন।"
+)
+
+# Same handoff, for a customer who has already given us their number.
+# Not a clause swap: HANDOFF_MESSAGE already contains "এ বিষয়ে ... বিস্তারিত
+# জানাচ্ছি", so substituting the generic replacement into it produced two
+# adjacent sentences both opening "এ বিষয়ে" and both ending "বিস্তারিত জানা-".
+# The whole message is replaced instead.
+HANDOFF_MESSAGE_PHONE_SHARED = (
+    "শেয়ার করার জন্য ধন্যবাদ। "
+    "আমরা রিভিউ করে এ বিষয়ে আপনাকে বিস্তারিত জানাচ্ছি।"
 )
 
 # Acknowledgment for emoji-only text and sticker-only attachments.
@@ -68,6 +86,33 @@ URL_PATTERN = re.compile(
 def contains_url(text: str) -> bool:
     """Return True if text contains anything that looks like a URL."""
     return bool(URL_PATTERN.search(text or ""))
+
+
+# ============================================================
+# Outbound send — the one place a PSID and a reply exist together
+# ============================================================
+def send_reply(sender_id: str, text: str) -> None:
+    """
+    Send `text` to `sender_id`, stripping the phone-number CTA first if that
+    customer has already given us their number.
+
+    Every send in process_messaging_event goes through here rather than only
+    the RAG reply. Seven separate producers can emit the ask — the three
+    knowledge base wordings, prompt_builder's ambiguous-query and KB-miss
+    instructions, the crash fallback below, and HANDOFF_MESSAGE — and only the
+    last of those is a code constant this module can see. Gating at the send
+    boundary covers all seven by construction, and is a no-op on text that
+    carries no CTA (THANKS_MESSAGE).
+    """
+    if phone_shared_state.has_shared_phone(sender_id):
+        # Whole-message swap, not a substitution — see the constant's comment.
+        if text == HANDOFF_MESSAGE:
+            text = HANDOFF_MESSAGE_PHONE_SHARED
+        text = substitute_cta(text)
+        check_for_drift(text, sender_id)
+
+    send_text_message(sender_id, text)
+
 
 router = APIRouter(prefix="/webhook", tags=["messenger"])
 
@@ -173,6 +218,25 @@ def process_messaging_event(event: dict, generator) -> None:
         log.warning(f"Event missing sender.id: {event}")
         return
 
+    # PHONE-SHARED DETECTION
+    # Sits above every branch below, because a customer can share a number on
+    # any of them — with a URL, as an image caption, or into a paused thread —
+    # and only the last branch reaches the generator's own detector.
+    #
+    # Above the pause check on purpose: a number sent while a rep has the
+    # thread still has to be remembered, since the pause expires and the bot
+    # comes back. This writes state on a path that otherwise only reads, but
+    # it emits nothing, so "paused = silent" still holds.
+    #
+    # Below the echo branch on purpose: in an echo the text is the page's own
+    # outgoing message, so detecting there would credit the wrong party.
+    #
+    # Detection runs on the RAW text while the generator's runs on sanitised,
+    # truncated text. Messenger therefore sees strictly more, and the extra
+    # cases suppress an ask rather than emit one — the safe direction.
+    if contains_phone_number(message.get("text") or ""):
+        phone_shared_state.mark_phone_shared(sender_id, reason="customer_message")
+
     # PAUSE CHECK — if a rep recently replied to this customer, the bot stays
     # silent for text messages but still acknowledges attachments (so the
     # customer knows their image was received and the rep can see it).
@@ -182,7 +246,7 @@ def process_messaging_event(event: dict, generator) -> None:
             log.info(
                 f"Customer {sender_id[:10]}... sent attachment during paused thread → handoff only"
             )
-            send_text_message(sender_id, HANDOFF_MESSAGE)
+            send_reply(sender_id, HANDOFF_MESSAGE)
         else:
             log.info(
                 f"Customer {sender_id[:10]}... sent text during paused thread → bot SILENT"
@@ -197,7 +261,7 @@ def process_messaging_event(event: dict, generator) -> None:
     if attachments:
         if is_all_stickers(attachments):
             log.info(f"Customer {sender_id[:10]}... sent sticker(s) → thanks (no pause)")
-            send_text_message(sender_id, THANKS_MESSAGE)
+            send_reply(sender_id, THANKS_MESSAGE)
             return
 
         att_types = [a.get("type", "unknown") for a in attachments]
@@ -205,7 +269,7 @@ def process_messaging_event(event: dict, generator) -> None:
             f"Customer {sender_id[:10]}... sent attachment(s): {att_types} "
             f"→ handoff + pause"
         )
-        send_text_message(sender_id, HANDOFF_MESSAGE)
+        send_reply(sender_id, HANDOFF_MESSAGE)
         pause_state.pause_thread(sender_id, reason="attachment")
         return
 
@@ -213,7 +277,7 @@ def process_messaging_event(event: dict, generator) -> None:
     text = message.get("text")
     if not text:
         log.info(f"Event has no text and no attachments: {event} → handoff")
-        send_text_message(sender_id, HANDOFF_MESSAGE)
+        send_reply(sender_id, HANDOFF_MESSAGE)
         return
 
     # URL DETECTION in text
@@ -221,7 +285,7 @@ def process_messaging_event(event: dict, generator) -> None:
     # the customer is sharing something that needs human review.
     if contains_url(text):
         log.info(f"Customer {sender_id[:10]}... sent URL in text → handoff + pause")
-        send_text_message(sender_id, HANDOFF_MESSAGE)
+        send_reply(sender_id, HANDOFF_MESSAGE)
         pause_state.pause_thread(sender_id, reason="url")
         return
 
@@ -230,7 +294,7 @@ def process_messaging_event(event: dict, generator) -> None:
     # Acknowledge politely without burning OpenAI tokens or calling the rep.
     if is_emoji_only(text):
         log.info(f"Customer {sender_id[:10]}... sent emoji-only text → thanks (no pause)")
-        send_text_message(sender_id, THANKS_MESSAGE)
+        send_reply(sender_id, THANKS_MESSAGE)
         return
 
         # Normal text message — generate bot reply
@@ -245,7 +309,13 @@ def process_messaging_event(event: dict, generator) -> None:
             "আপনাকে কল করে সহায়তা করতে পারবেন।"
         )
 
-    send_text_message(sender_id, reply_text)
+    # The generator's own detector fired on its sanitised view of the text.
+    # Exact comparison against the imported constant, so no detection logic is
+    # duplicated — this is generate() reporting what it did, not a re-check.
+    if reply_text == PHONE_ACKNOWLEDGMENT:
+        phone_shared_state.mark_phone_shared(sender_id, reason="generator_bypass")
+
+    send_reply(sender_id, reply_text)
 
 
 # ============================================================
