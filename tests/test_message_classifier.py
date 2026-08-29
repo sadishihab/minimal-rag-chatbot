@@ -50,28 +50,98 @@ def run_emoji_tests():
     return failed
 
 
+# ============================================================
+# Sticker fixtures — built from Meta's documented payload, not from ours
+# ============================================================
+# The fixtures these replaced were invented. They used ONE attachment with
+# no url:
+#
+#     [{"type": "image", "payload": {"sticker_id": 369239263222822}}]
+#
+# The sticker id is genuine — 369239263222822 is the Like sticker, straight
+# out of Meta's field table — which is what made the fixture look sourced.
+# Everything structural around it was derived from what the implementation
+# believed, so the test could only ever restate is_all_stickers, never
+# contradict it. Facebook actually sends TWO attachments today, and both
+# carry a url.
+#
+# Meta, webhook-events/messages reference:
+#   "During the 90-day transition period, both the `sticker` and `image`
+#    attachment types are present in the payload. After August 30, 2026,
+#    only the `sticker` attachment type will be sent."
+#   "sticker_id | Number | ... Applicable to attachment type: `sticker`.
+#    During the transition period (until August 30, 2026), also present in
+#    attachment type: `image` when a sticker is sent."
+#
+# So there are three regimes, and is_all_stickers has to hold in all of
+# them. Both live ones are covered below.
+
+# Shape is from the docs; the specific CDN host is illustrative. What
+# matters is that the field is PRESENT — its absence is half of what made
+# the old fixture fiction.
+STICKER_URL = "https://scontent.xx.fbcdn.net/v/t39.1997-6/39178562_1505197616216488_5411344281094586368_n.png"
+LIKE_STICKER_ID = 369239263222822   # Meta's own example: the Like sticker
+
+# Today (transition window): the legacy image attachment AND the new sticker
+# attachment, both carrying sticker_id. This is the shape that broke the
+# type == "image" check in production.
+TRANSITION_STICKER = [
+    {"type": "image", "payload": {"url": STICKER_URL, "sticker_id": LIKE_STICKER_ID}},
+    {"type": "sticker", "payload": {"url": STICKER_URL, "sticker_id": LIKE_STICKER_ID}},
+]
+
+# After 30 Aug 2026: the image half is gone.
+POST_TRANSITION_STICKER = [
+    {"type": "sticker", "payload": {"url": STICKER_URL, "sticker_id": LIKE_STICKER_ID}},
+]
+
+# Before ~1 Jun 2026, and still worth pinning: type "image" alone was right
+# once, and a predicate keyed on sticker_id keeps working on it.
+LEGACY_STICKER = [
+    {"type": "image", "payload": {"url": STICKER_URL, "sticker_id": LIKE_STICKER_ID}},
+]
+
+# A genuine photo: type "image", a url, and no sticker_id anywhere.
+REAL_PHOTO = [
+    {"type": "image", "payload": {"url": "https://scontent.xx.fbcdn.net/v/t34.0-12/photo.jpg"}},
+]
+
+
 def run_sticker_tests():
     cases = [
         # (attachments, expected_result, description)
-        ([{"type": "image", "payload": {"sticker_id": 369239263222822}}], True,
-         "single sticker"),
-        ([{"type": "image", "payload": {"sticker_id": 1}},
-          {"type": "image", "payload": {"sticker_id": 2}}], True,
-         "two stickers"),
-        ([{"type": "image", "payload": {}}], False,
-         "image without sticker_id (real photo)"),
-        ([{"type": "image", "payload": {"url": "https://..."}}], False,
-         "image with URL only (real photo)"),
-        ([{"type": "image", "payload": {"sticker_id": 1}},
-          {"type": "image", "payload": {"url": "https://..."}}], False,
-         "sticker + photo mixed"),
-        ([{"type": "video", "payload": {"url": "..."}}], False,
+        (TRANSITION_STICKER, True,
+         "sticker, transition shape (image + sticker, both sticker_id)"),
+        (POST_TRANSITION_STICKER, True,
+         "sticker, after 30 Aug 2026 (sticker only)"),
+        (LEGACY_STICKER, True,
+         "sticker, legacy shape (image + sticker_id)"),
+
+        (REAL_PHOTO, False,
+         "real photo (image with url, no sticker_id)"),
+
+        # THE ONE THAT PINS all() AGAINST any().
+        # A sticker and a genuine photo in the same message. Under any(),
+        # the sticker's id vouches for the photo, the customer gets
+        # "ধন্যবাদ", and no rep ever sees the image. Under all(), the photo
+        # has no sticker_id, so the whole list is False and takes the
+        # handoff branch — which is the correct outcome.
+        (TRANSITION_STICKER + REAL_PHOTO, False,
+         "sticker + real photo → NOT all stickers (any() would swallow the photo)"),
+        (POST_TRANSITION_STICKER + REAL_PHOTO, False,
+         "sticker (post-transition) + real photo → NOT all stickers"),
+
+        ([{"type": "video", "payload": {"url": "https://cdn.example/v.mp4"}}], False,
          "video"),
-        ([{"type": "audio", "payload": {"url": "..."}}], False,
-         "audio"),
-        ([{"type": "file", "payload": {"url": "..."}}], False,
+        ([{"type": "audio", "payload": {"url": "https://cdn.example/a.mp4"}}], False,
+         "audio (voice clip)"),
+        ([{"type": "file", "payload": {"url": "https://cdn.example/f.pdf"}}], False,
          "file"),
+        ([{"type": "fallback", "payload": {}}], False,
+         "fallback (link share)"),
+
         ([], False, "empty list"),
+        (["not-a-dict"], False, "malformed attachment (not a dict)"),
     ]
 
     print()

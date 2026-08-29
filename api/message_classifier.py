@@ -279,14 +279,36 @@ def is_acknowledgement(text: str) -> bool:
 # ============================================================
 def is_all_stickers(attachments: list) -> bool:
     """
-    Return True if every attachment in the list is a Messenger sticker.
+    Return True if EVERY attachment in the list is a Messenger sticker.
 
-    FB sends stickers as attachments with:
-      - type == "image"
-      - payload contains "sticker_id"
+    Keyed on `sticker_id` presence in the payload, and on nothing else.
+    `type` is deliberately not checked — it is not stable across time:
 
-    The "type": "sticker" naming is a common gotcha — FB actually uses
-    "image" with a sticker_id in the payload.
+      before ~1 Jun 2026   one attachment,  type "image"   + sticker_id
+      transition window    TWO attachments, type "image" AND type "sticker",
+                           both carrying sticker_id
+      after 30 Aug 2026    one attachment,  type "sticker" + sticker_id
+
+    Meta documents `sticker_id` as sticker-exclusive ("Applicable to
+    attachment type: sticker. During the transition period, also present in
+    attachment type: image when a sticker is sent"), so it is the one field
+    that means the same thing in all three regimes. Any predicate written
+    against `type` is wrong in at least one of them — which is exactly how
+    this function broke: it required type == "image", Meta added the second
+    "sticker" attachment, and every customer sticker fell through to the
+    handoff branch and paused the thread for 7 days.
+
+    ALL, NEVER ANY — this is the property that keeps the fix safe.
+    A sticker sent alongside a genuine photo puts an attachment with no
+    sticker_id in the same list. Quantified with all(), that list is False
+    and takes the handoff branch, which is what we want: a real photo needs
+    a human. Quantified with any(), the sticker's own id would vouch for the
+    photo and the customer's image would be answered with "ধন্যবাদ" and
+    never seen by a rep. The safety of this branch lives in the quantifier,
+    not in the field.
+
+    Presence test, not truthiness: sticker_id is documented as a Number, so
+    `in payload` is the property being asserted.
 
     Returns False for empty lists (no attachments = not a sticker case).
     """
@@ -296,10 +318,7 @@ def is_all_stickers(attachments: list) -> bool:
     for att in attachments:
         if not isinstance(att, dict):
             return False
-        att_type = att.get("type")
         payload = att.get("payload") or {}
-        if att_type != "image":
-            return False
         if "sticker_id" not in payload:
             return False
     return True

@@ -83,12 +83,45 @@ ATTACHMENT_EVENT = {
         "attachments": [{"type": "image", "payload": {"url": "https://example.com/a.jpg"}}],
     },
 }
+# Sticker attachments come from Meta's documented payload, not from what the
+# classifier used to assume. Facebook sends TWO attachments during the
+# transition window (until 30 Aug 2026) — the legacy "image" one and the new
+# "sticker" one, both carrying sticker_id — and only the "sticker" one after
+# that. The single-attachment fixture this replaced was invented, and it is
+# why every customer sticker took the handoff branch in production for months
+# while this suite stayed green. See tests/test_message_classifier.py for the
+# quoted documentation.
+STICKER_URL = "https://scontent.xx.fbcdn.net/v/t39.1997-6/39178562_1505197616216488_5411344281094586368_n.png"
+LIKE_STICKER_ID = 369239263222822
+
+STICKER_ATTACHMENTS = [
+    {"type": "image", "payload": {"url": STICKER_URL, "sticker_id": LIKE_STICKER_ID}},
+    {"type": "sticker", "payload": {"url": STICKER_URL, "sticker_id": LIKE_STICKER_ID}},
+]
+POST_TRANSITION_STICKER_ATTACHMENTS = [
+    {"type": "sticker", "payload": {"url": STICKER_URL, "sticker_id": LIKE_STICKER_ID}},
+]
+REAL_PHOTO_ATTACHMENT = {
+    "type": "image",
+    "payload": {"url": "https://scontent.xx.fbcdn.net/v/t34.0-12/photo.jpg"},
+}
+
 STICKER_EVENT = {
     "sender": {"id": CUSTOMER},
     "recipient": {"id": PAGE},
+    "message": {"mid": "m3", "attachments": STICKER_ATTACHMENTS},
+}
+POST_TRANSITION_STICKER_EVENT = {
+    "sender": {"id": CUSTOMER},
+    "recipient": {"id": PAGE},
+    "message": {"mid": "m3b", "attachments": POST_TRANSITION_STICKER_ATTACHMENTS},
+}
+STICKER_PLUS_PHOTO_EVENT = {
+    "sender": {"id": CUSTOMER},
+    "recipient": {"id": PAGE},
     "message": {
-        "mid": "m3",
-        "attachments": [{"type": "image", "payload": {"sticker_id": 369239263222822}}],
+        "mid": "m3c",
+        "attachments": STICKER_ATTACHMENTS + [REAL_PHOTO_ATTACHMENT],
     },
 }
 REP_ECHO_EVENT = {
@@ -203,14 +236,93 @@ def test_inside_window_attachment_hands_off_and_pauses(client, spies, monkeypatc
     assert generator.calls == []
 
 
-def test_inside_window_sticker_thanks_without_pausing(client, spies, monkeypatch):
+@pytest.mark.parametrize(
+    "event",
+    [
+        pytest.param(STICKER_EVENT, id="transition_shape_image_and_sticker"),
+        pytest.param(POST_TRANSITION_STICKER_EVENT, id="after_30_aug_sticker_only"),
+    ],
+)
+def test_inside_window_sticker_thanks_without_pausing(
+    client, spies, monkeypatch, event
+):
+    """
+    A sticker gets "ধন্যবাদ" and no pause, in BOTH payload regimes.
+
+    Parametrised rather than doubled because the routing being asserted is
+    identical — what differs is only the shape Facebook happens to send, and
+    that is exactly the axis the old fixture got wrong. Keying the classifier
+    on sticker_id instead of type is what makes one assertion cover both;
+    re-adding a type check fails one of these two whichever value it picks.
+    """
     send, pause, generator = spies
     monkeypatch.setattr(messenger, "bot_is_active", lambda: True)
 
-    post_event(client, STICKER_EVENT)
+    post_event(client, event)
 
     assert send.calls == [(CUSTOMER, messenger.THANKS_MESSAGE)]
     assert pause.pause_calls == []
+    assert generator.calls == []
+
+
+def test_attachment_log_lines_show_sticker_id_presence(
+    client, spies, monkeypatch, caplog
+):
+    """
+    Both attachment log lines must show WHICH attachments carried a sticker_id.
+
+    The line used to print types only, on the handoff path alone, and the
+    sticker success path printed nothing about the payload at all. Types alone
+    cannot explain the routing, because is_all_stickers keys on sticker_id and
+    ignores type — and after 30 Aug 2026 the conspicuous ['image', 'sticker']
+    pair that made this bug visible in production collapses to a bland
+    ['sticker'].
+
+    Asserted on both branches: a diagnostic that only exists on the failure
+    path cannot show you what a working sticker looked like.
+    """
+    send, _pause, _generator = spies
+    monkeypatch.setattr(messenger, "bot_is_active", lambda: True)
+
+    with caplog.at_level(logging.INFO):
+        post_event(client, STICKER_EVENT)
+
+    assert send.calls == [(CUSTOMER, messenger.THANKS_MESSAGE)]
+    assert "image+sticker_id" in caplog.text
+    assert "sticker+sticker_id" in caplog.text
+
+    caplog.clear()
+    send.calls.clear()
+
+    with caplog.at_level(logging.INFO):
+        post_event(client, STICKER_PLUS_PHOTO_EVENT)
+
+    assert send.calls == [(CUSTOMER, messenger.HANDOFF_MESSAGE)]
+    # The photo is the attachment that decided the branch, and it is the one
+    # printed WITHOUT the suffix — that contrast is the whole diagnostic.
+    assert "'image+sticker_id'" in caplog.text
+    assert "'image'" in caplog.text
+
+
+def test_inside_window_sticker_with_a_real_photo_hands_off_and_pauses(
+    client, spies, monkeypatch
+):
+    """
+    A sticker sent alongside a genuine photo must take the handoff branch.
+
+    This is the routing consequence of is_all_stickers using all() rather
+    than any(). Under any(), the sticker's own sticker_id would vouch for the
+    photo: the customer would get "ধন্যবাদ", no pause would be set, and no rep
+    would ever see the image they sent. The photo carries no sticker_id, so
+    all() rejects the list and the customer reaches a human.
+    """
+    send, pause, generator = spies
+    monkeypatch.setattr(messenger, "bot_is_active", lambda: True)
+
+    post_event(client, STICKER_PLUS_PHOTO_EVENT)
+
+    assert send.calls == [(CUSTOMER, messenger.HANDOFF_MESSAGE)]
+    assert pause.pause_calls == [(CUSTOMER, "attachment")]
     assert generator.calls == []
 
 

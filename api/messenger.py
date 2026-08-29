@@ -88,6 +88,34 @@ def contains_url(text: str) -> bool:
     return bool(URL_PATTERN.search(text or ""))
 
 
+def describe_attachments(attachments: list) -> list:
+    """
+    Render attachments for the log as type + whether they carry a sticker_id.
+
+    Types alone are not enough to explain a routing decision. is_all_stickers
+    keys on sticker_id presence and ignores type entirely, so a line printing
+    only ['image', 'sticker'] shows the branch that was taken without showing
+    the field that decided it.
+
+    It also has to survive 30 Aug 2026, when Meta drops the legacy "image"
+    half of a sticker message. Until then a sticker logs as the conspicuous
+    pair ['image+sticker_id', 'sticker+sticker_id']; afterwards it collapses
+    to a bland ['sticker'], indistinguishable at a glance from any other
+    single attachment. The suffix is what keeps it readable either way, and
+    it makes `grep sticker_id` the health check for this branch.
+    """
+    described = []
+    for att in attachments:
+        if not isinstance(att, dict):
+            described.append("malformed")
+            continue
+        att_type = att.get("type", "unknown")
+        payload = att.get("payload") or {}
+        suffix = "+sticker_id" if "sticker_id" in payload else ""
+        described.append(f"{att_type}{suffix}")
+    return described
+
+
 # ============================================================
 # Outbound send — the one place a PSID and a reply exist together
 # ============================================================
@@ -260,14 +288,16 @@ def process_messaging_event(event: dict, generator) -> None:
     attachments = message.get("attachments") or []
     if attachments:
         if is_all_stickers(attachments):
-            log.info(f"Customer {sender_id[:10]}... sent sticker(s) → thanks (no pause)")
+            log.info(
+                f"Customer {sender_id[:10]}... sent sticker(s): "
+                f"{describe_attachments(attachments)} → thanks (no pause)"
+            )
             send_reply(sender_id, THANKS_MESSAGE)
             return
 
-        att_types = [a.get("type", "unknown") for a in attachments]
         log.info(
-            f"Customer {sender_id[:10]}... sent attachment(s): {att_types} "
-            f"→ handoff + pause"
+            f"Customer {sender_id[:10]}... sent attachment(s): "
+            f"{describe_attachments(attachments)} → handoff + pause"
         )
         send_reply(sender_id, HANDOFF_MESSAGE)
         pause_state.pause_thread(sender_id, reason="attachment")
