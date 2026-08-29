@@ -53,7 +53,13 @@ Request flow (Messenger path — `api/messenger.py` → `generation/generator.py
 1. **`api/messenger.py`** — Messenger webhook (`/webhook`). Verifies the FB HMAC-SHA256 signature, then applies the **active-hours gate** (`api/active_hours.py`): the bot is active when it is inside `BOT_ACTIVE_START_HOUR`..`BOT_ACTIVE_END_HOUR` (default 23→9, always Asia/Dhaka, wraps midnight) **OR** on a weekday listed in `BOT_ALWAYS_ACTIVE_DAYS` (default empty; production is `friday`, making Thu 23:00 → Sat 09:00 one continuous 34-hour stretch). Otherwise it acks FB with 200 and does nothing else — no sends, no `pause_state` reads or writes, no RAG. The gate sits above the `entry[].messaging[]` loop so it covers every event type including echoes and postbacks; do not move it below that loop or into `process_messaging_event`. `validate_window()` rejects out-of-range and zero-length windows at import, and `validate_days()` rejects unknown day names the same way — `0`/`24` is the explicit always-active config. Both fail at import so a typo stops the container booting rather than silently meaning "no always-active days". When active, each event is routed *before* it ever reaches the RAG pipeline:
    - `is_echo` message where `app_id != FACEBOOK_APP_ID` → a human rep replied via Page Inbox → `pause_state.pause_thread()` (bot goes silent for that customer for 7 days, sliding window)
    - thread already paused → bot stays silent for text; attachments still get an acknowledgment
-   - attachment that's all stickers → "ধন্যবাদ" only, no pause
+   - attachment where **every** attachment carries a `sticker_id` → "ধন্যবাদ"
+     only, no pause. Keyed on `sticker_id`, never on `type`: Meta sends a
+     sticker as two attachments during the transition window (`image` **and**
+     `sticker`, both with the id) and as one afterwards, so `type` is wrong in
+     at least one regime. The quantifier is the safety property — `any()`
+     would let a sticker vouch for a genuine photo attached alongside it and
+     the photo would never reach a rep. See *Project-specific traps*.
    - any other attachment, or text containing a URL → handoff message + pause (needs human review)
    - emoji-only text → "ধন্যবাদ" only, no pause, no RAG call
    - text that is *entirely* one of a closed list of acknowledgements ("ok",
@@ -352,6 +358,23 @@ their number anyway, with the reply text attached so the wording is
 recoverable. Quiet log ⇒ exact matching is sufficient. Noisy log ⇒ the fix is
 prompt tightening or fuzzy matching, not a wider regex guessed at in advance.
 
+**Messenger sticker payloads changed shape mid-2026, twice.**
+A sticker is not one attachment and its `type` is not stable. Until
+30 Aug 2026 Facebook sends **two** attachments for one sticker —
+`{"type": "image", ...}` and `{"type": "sticker", ...}`, both carrying
+`sticker_id` and a `url` — and only the `sticker` one after that. Anything
+branching on attachment `type` is therefore wrong in at least one regime.
+`sticker_id` presence is the only stable discriminator, and it is the only
+field Meta documents as sticker-exclusive.
+
+Diagnosis from production: `docker logs minimal-rag | grep sticker_id`. The
+attachment log lines render each attachment as `type` plus a `+sticker_id`
+suffix, so a sticker reads `['image+sticker_id', 'sticker+sticker_id']` today
+and `['sticker+sticker_id']` after the transition, while a genuine photo reads
+a bare `['image']`. If a line shows attachments carrying `sticker_id` on the
+`→ handoff + pause` branch, the classifier and the payload have diverged
+again.
+
 **A paused thread makes every subsequent test look broken.**
 Once `pause_state` holds a PSID, everything from that customer returns silence in
 ~3ms, including tests of completely unrelated branches. A test that "fails" with
@@ -427,6 +450,49 @@ green suite as unproven until you have watched it go red.
    function's own definition, so both sides moved together under any clock
    change. Fixed in 70e6539 by freezing the clock; kept here as the worked
    example of how the shape hides.
+
+### Fixture fidelity — a test that asserts correctly against a payload Facebook does not send
+
+Distinct from the three above, and worth keeping separate: those tests assert
+nothing, so they can never fail. This one asserted, correctly, against a
+sticker payload Facebook does not send.
+
+`is_all_stickers` required `type == "image"`. Its fixtures were a single
+attachment with no `url`:
+
+```python
+[{"type": "image", "payload": {"sticker_id": 369239263222822}}]
+```
+
+The sticker id is genuine — Meta's own Like-sticker example, straight out of
+the field table — which is exactly what made the fixture look sourced.
+Everything structural around it was derived from what the implementation
+believed. **A fixture built from the code's belief can only restate the
+implementation; it can never contradict it.** The test and the code were
+wrong together, in the same direction, about the same thing.
+
+**Mutation testing would not have caught this.** Mutate `is_all_stickers` and
+the suite goes red exactly as it should — against fiction. Every technique in
+*Verification conventions* above is about making a check capable of failing,
+and this check was fully capable of failing; it was pointed at the wrong
+input. The control that finds this class is different: **go and read the
+platform's documented payload, and cite it in the fixture**, which
+`tests/test_message_classifier.py` now does verbatim.
+
+Cost: every customer sticker took the handoff branch and paused the thread
+for 7 days, on the live page, for months, with a green suite throughout.
+
+**It was an inherited regression, not a day-one defect.** The code was correct
+when written. Meta added the second `sticker` attachment around **1 June
+2026**; the 90-day transition ends **30 August 2026**, after which the legacy
+`image` half disappears and only `sticker` is sent. The fix keys on
+`sticker_id` precisely so it spans all three regimes — pre-transition,
+transition, and post-transition are all pinned as fixtures in both test files.
+
+Generalisation worth carrying: **anything shaped by an external platform's
+wire format needs its fixtures sourced from that platform's docs, with the
+quote in the file.** The repo cannot detect a payload change on its own, and a
+suite written from our own assumptions will agree with our own bug forever.
 
 ### Other
 
